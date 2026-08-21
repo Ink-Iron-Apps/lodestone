@@ -1,0 +1,19 @@
+[project]
+name = "lodestone-crawler"
+version = "0.1.0"
+description = "Politeness-first crawler that turns FanFiction.Net listing pages into structured story metadata"
+requires-python = ">=3.12"
+dependencies = [
+    "curl_cffi>=0.7",
+    "psycopg[binary]>=3.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

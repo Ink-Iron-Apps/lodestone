@@ -1,0 +1,52 @@
+name: lodestone
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lodestone}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-lodestone}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Applied only on first boot of an empty data volume.
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lodestone} -d ${POSTGRES_DB:-lodestone}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:5433:5432"
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.13
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?set MEILI_MASTER_KEY in .env}
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meili-data:/meili_data
+    ports:
+      - "127.0.0.1:7700:7700"
+
+  crawler:
+    build: ./crawler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LODESTONE_DSN: postgresql://${POSTGRES_USER:-lodestone}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lodestone}
+    # The crawler must egress from a residential IP. Cloudflare blocks
+    # datacenter ASNs outright, so running this container on a VPS will get a
+    # flat 403 no matter how polite it is. Host networking keeps it on the
+    # machine's own connection.
+    network_mode: host
+    command: ["python", "-m", "lodestone_crawler", "justin"]
+
+volumes:
+  postgres-data:
+  meili-data:

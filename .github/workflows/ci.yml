@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main, claude/dev]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        working-directory: crawler
+        run: pip install -e '.[dev]'
+      - name: Test
+        # Snapshot fixtures are FFN's HTML and are not committed, so the
+        # snapshot-invariant tests skip here. The grammar tests -- which are the
+        # ones that pin the parser's actual behaviour -- always run.
+        working-directory: crawler
+        run: python -m pytest -q
