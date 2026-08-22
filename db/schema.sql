@@ -4,9 +4,9 @@
 -- it. Anything that cannot be rebuilt from these tables by replaying a reindex
 -- does not belong in the search engine.
 --
--- Sizing: ~12M stories at ~500B/row is ~6GB of table plus indexes, and 12M
--- 384-dim float32 summary embeddings is ~18GB raw / ~2GB at int8. Comfortably a
--- single-box workload.
+-- Sizing, measured on the pilot: ~409B/row, so ~5GB of table for 12M stories.
+-- 768-dim float32 embeddings add ~37GB; halfvec(768) would halve that if it
+-- ever becomes the binding constraint.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -75,7 +75,10 @@ CREATE TABLE IF NOT EXISTS stories (
     last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at     TIMESTAMPTZ,
 
-    summary_embedding vector(384),
+    -- 768 to match nomic-embed-text. Must equal EMBEDDING_DIMENSIONS in
+    -- crawler/lodestone_crawler/embeddings.py; a mismatch is rejected there
+    -- rather than silently truncated.
+    summary_embedding vector(768),
 
     -- Popularity per unit length. FFN sorts by raw favourites, which structurally
     -- buries every good short work under every long mediocre one.

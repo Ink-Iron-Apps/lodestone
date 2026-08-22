@@ -18,12 +18,20 @@ from typing import Optional
 
 from .fetcher import BlockedError, FanFictionFetcher, FetchError
 from .models import Fandom
-from .parser import iterFandomDirectory, parseListingPage
+from .parser import (
+    iterCrossoverDirectory,
+    iterFandomDirectory,
+    parseCrossoverPairs,
+    parseListingPage,
+)
 from .storage import StoryStore
 from .surfaces import (
     SECTION_SLUGS,
     BrowseSort,
+    crossoverArchiveUrl,
+    crossoverDirectoryUrl,
     fandomBrowseUrl,
+    fandomCrossoverPartnersUrl,
     justInUrl,
     sectionDirectoryUrl,
 )
@@ -176,3 +184,161 @@ def discoverFandoms(fetcher: FanFictionFetcher, store: StoryStore) -> int:
             discoveredCount += 1
         logger.info("section %s -> %d fandoms cumulative", sectionSlug, discoveredCount)
     return discoveredCount
+
+
+# ---------------------------------------------------------------------------
+# Crossovers
+# ---------------------------------------------------------------------------
+
+
+def discoverCrossoverPairs(
+    fetcher: FanFictionFetcher,
+    store: StoryStore,
+    maxFandoms: Optional[int] = None,
+) -> int:
+    """Enumerate every A-x-B crossover archive FFN has.
+
+    Two hops: each section's crossover directory gives the fandoms that have
+    crossovers along with their numeric category ids, then each fandom's own
+    partner page gives its pairs.
+
+    The largest fandoms' partner pages fault with FFN's own "Error Type 1", but
+    because every pair is listed on both partners' pages, those pairs are still
+    recovered from the other side. A failure here is logged and skipped rather
+    than aborting the sweep.
+    """
+    crossoverFandoms: list[Fandom] = []
+    for sectionSlug in SECTION_SLUGS:
+        try:
+            html = fetcher.fetch(crossoverDirectoryUrl(sectionSlug))
+        except FetchError as error:
+            logger.warning("crossover directory %s failed: %s", sectionSlug, error)
+            continue
+        sectionFandoms = list(iterCrossoverDirectory(html))
+        for fandom in sectionFandoms:
+            fandom.sectionSlug = sectionSlug
+            store.upsertFandom(fandom)
+        crossoverFandoms.extend(sectionFandoms)
+        logger.info("crossover directory %s -> %d fandoms", sectionSlug, len(sectionFandoms))
+
+    if maxFandoms is not None:
+        crossoverFandoms = crossoverFandoms[:maxFandoms]
+
+    faultedFandoms = 0
+    for index, fandom in enumerate(crossoverFandoms, start=1):
+        try:
+            html = fetcher.fetch(fandomCrossoverPartnersUrl(fandom.fandomSlug, fandom.categoryId))
+        except FetchError as error:
+            # Expected for the biggest fandoms; their pairs come from partners.
+            faultedFandoms += 1
+            logger.warning("partner list for %s faulted (recoverable): %s", fandom.name, error)
+            continue
+
+        pairs = parseCrossoverPairs(html)
+        store.upsertCrossoverPairs(pairs)
+        if index % 25 == 0:
+            logger.info("partner lists %d/%d -> %d pairs known",
+                        index, len(crossoverFandoms), store.countCrossoverPairs())
+
+    totalPairs = store.countCrossoverPairs()
+    logger.info("crossover discovery done: %d pairs, %d partner lists faulted",
+                totalPairs, faultedFandoms)
+    return totalPairs
+
+
+def discoverPairsForFandom(
+    fetcher: FanFictionFetcher,
+    store: StoryStore,
+    fandomSlug: str,
+    categoryId: int,
+) -> int:
+    """Discover crossover pairs for one fandom.
+
+    Useful on its own for retrying a fandom whose partner list faulted, and for
+    extending the corpus without sweeping every section.
+    """
+    html = fetcher.fetch(fandomCrossoverPartnersUrl(fandomSlug, categoryId))
+    pairs = parseCrossoverPairs(html)
+    store.upsertCrossoverPairs(pairs)
+    logger.info("%s -> %d crossover pairs", fandomSlug, len(pairs))
+    return len(pairs)
+
+
+def backfillCrossoverPair(
+    fetcher: FanFictionFetcher,
+    store: StoryStore,
+    categoryIdA: int,
+    categoryIdB: int,
+    slugA: str,
+    slugB: str,
+    maxPages: Optional[int] = None,
+) -> CrawlOutcome:
+    """Walk one A-x-B crossover archive to exhaustion.
+
+    Rows here carry no fandom prefix, so both parent fandoms come from the crawl
+    context -- and supplying two of them is what marks the story as a crossover.
+    """
+    surfaceKey = f"crossover:{categoryIdA}/{categoryIdB}"
+    state = store.getCrawlState(surfaceKey)
+    if state and state["is_exhausted"]:
+        return CrawlOutcome(surfaceKey, isExhausted=True, stoppedReason="already exhausted")
+
+    contextFandoms = [
+        Fandom(name=slugA.replace("-", " "), fandomSlug=slugA, categoryId=categoryIdA),
+        Fandom(name=slugB.replace("-", " "), fandomSlug=slugB, categoryId=categoryIdB),
+    ]
+
+    outcome = CrawlOutcome(surfaceKey)
+    pageNumber = (state["last_page"] if state else 0) + 1
+
+    while maxPages is None or outcome.pagesFetched < maxPages:
+        url = crossoverArchiveUrl(slugA, categoryIdA, slugB, categoryIdB,
+                                  pageNumber=pageNumber, sort=BrowseSort.PUBLISH_DATE)
+        try:
+            html = fetcher.fetch(url)
+        except BlockedError:
+            store.recordCrawlProgress(surfaceKey, pageNumber - 1, 0, lastError="blocked")
+            raise
+        except FetchError as error:
+            store.recordCrawlProgress(surfaceKey, pageNumber - 1, 0, lastError=str(error))
+            outcome.stoppedReason = f"fetch failed: {error}"
+            return outcome
+
+        records = parseListingPage(html, defaultFandoms=contextFandoms)
+        outcome.pagesFetched += 1
+
+        if not records:
+            outcome.isExhausted = True
+            outcome.stoppedReason = "no rows"
+            store.recordCrawlProgress(surfaceKey, pageNumber - 1, 0, isExhausted=True)
+            return outcome
+
+        outcome.rowsIngested += store.upsertStories(records)
+        store.recordCrawlProgress(surfaceKey, pageNumber, len(records))
+        pageNumber += 1
+
+    outcome.stoppedReason = "page budget reached"
+    return outcome
+
+
+def backfillCrossovers(
+    fetcher: FanFictionFetcher,
+    store: StoryStore,
+    maxPairs: Optional[int] = None,
+    maxPagesPerPair: Optional[int] = None,
+) -> tuple[int, int]:
+    """Walk every known crossover archive that is not yet exhausted."""
+    pairsCrawled = 0
+    rowsIngested = 0
+    for pair in store.iterCrossoverPairs(limit=maxPairs):
+        outcome = backfillCrossoverPair(
+            fetcher, store,
+            pair["fandom_id_a"], pair["fandom_id_b"],
+            pair["slug_a"], pair["slug_b"],
+            maxPages=maxPagesPerPair,
+        )
+        pairsCrawled += 1
+        rowsIngested += outcome.rowsIngested
+        logger.info("%s -> %d rows (%s)", outcome.surfaceKey,
+                    outcome.rowsIngested, outcome.stoppedReason)
+    return pairsCrawled, rowsIngested

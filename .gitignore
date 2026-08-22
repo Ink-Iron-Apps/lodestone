@@ -7,3 +7,6 @@ __pycache__/
 # Fixtures are snapshots of real pages; the HTML itself is FFN's, so it stays
 # local. Regenerate with scripts/save_fixtures.py.
 crawler/tests/fixtures/*.html
+
+# Local scratch, not part of the project.
+.scratch/

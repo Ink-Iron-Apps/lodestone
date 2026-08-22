@@ -17,9 +17,12 @@ import pathlib
 import pytest
 
 from lodestone_crawler.models import Fandom, StoryStatus
+from lodestone_crawler.surfaces import crossoverArchiveUrl
 from lodestone_crawler.parser import (
     FFN_GENRES,
+    iterCrossoverDirectory,
     iterFandomDirectory,
+    parseCrossoverPairs,
     parseCharacters,
     parseGenres,
     parseListingPage,
@@ -287,3 +290,77 @@ def testFandomDirectoryEnumeration():
     assert "Harry Potter" in names
     assert all(fandom.sectionSlug == "book" for fandom in fandoms)
     assert all(fandom.fandomSlug for fandom in fandoms)
+
+
+# --------------------------------------------------------------------------
+# 3. Crossovers
+# --------------------------------------------------------------------------
+
+def testCrossoverDirectoryYieldsCategoryIds():
+    """The crossover directory is the only place FFN exposes a fandom's numeric
+    category id, which every crossover archive URL is built from."""
+    html = (
+        '<div id="list_output">'
+        '<div><a href="/crossovers/Harry-Potter/224/" title="Harry Potter">Harry Potter</a></div>'
+        '<div><a href="/crossovers/Naruto/1402/" title="Naruto">Naruto</a></div>'
+        "</div>"
+    )
+    fandoms = list(iterCrossoverDirectory(html))
+
+    assert [(f.name, f.fandomSlug, f.categoryId) for f in fandoms] == [
+        ("Harry Potter", "Harry-Potter", 224),
+        ("Naruto", "Naruto", 1402),
+    ]
+
+
+def testCrossoverPairsAreCanonicallyOrdered():
+    """FFN builds the pair URL by ascending category id regardless of which
+    partner's page you came from, so the parsed tuple is already canonical."""
+    html = (
+        '<a href="/Harry-Potter-and-Naruto-Crossovers/224/1402/">Harry Potter</a>'
+        '<a href="/Naruto-and-Bleach-Crossovers/1402/1758/">Bleach</a>'
+    )
+    pairs = parseCrossoverPairs(html)
+
+    assert pairs == [
+        (224, 1402, "Harry-Potter", "Naruto"),
+        (1402, 1758, "Naruto", "Bleach"),
+    ]
+    for idA, idB, _, _ in pairs:
+        assert idA < idB
+
+
+def testSamePairFromBothSidesDeduplicates():
+    """Every pair is listed on both partners' pages. Because both sides yield
+    the identical canonical tuple, the largest fandoms' partner pages faulting
+    server-side costs no coverage."""
+    fromNaruto = parseCrossoverPairs('<a href="/Harry-Potter-and-Naruto-Crossovers/224/1402/">HP</a>')
+    fromHarryPotter = parseCrossoverPairs('<a href="/Harry-Potter-and-Naruto-Crossovers/224/1402/">Naruto</a>')
+    assert fromNaruto == fromHarryPotter
+    assert len(set(fromNaruto) | set(fromHarryPotter)) == 1
+
+
+def testCrossoverArchiveUrlNormalizesPairOrder():
+    """Passing the partners in the wrong order must still produce the URL FFN
+    actually serves -- the reversed form 404s."""
+    forward = crossoverArchiveUrl("Harry-Potter", 224, "Naruto", 1402)
+    reversed_ = crossoverArchiveUrl("Naruto", 1402, "Harry-Potter", 224)
+
+    assert "/Harry-Potter-and-Naruto-Crossovers/224/1402/" in forward
+    assert forward == reversed_
+
+
+def testCrossoverRowsTakeBothFandomsFromContext():
+    """Crossover archive rows carry no fandom prefix, so both parents come from
+    the crawl context -- and having two of them is what marks the crossover."""
+    row = buildRow(
+        "Rated: T - English - Adventure - Chapters: 5 - Words: 12,000"
+        " - Published: <span data-xutime='1717853402'>6/8/2024</span>"
+    )
+    record = parseListingRow(row, defaultFandoms=[
+        Fandom(name="Harry Potter", fandomSlug="Harry-Potter", categoryId=224),
+        Fandom(name="Naruto", fandomSlug="Naruto", categoryId=1402),
+    ])
+
+    assert record.isCrossover is True
+    assert [f.name for f in record.fandoms] == ["Harry Potter", "Naruto"]

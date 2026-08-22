@@ -280,3 +280,17 @@ input:focus, select:focus, button:focus-visible {
   text-align: center; color: #6B7280; font-size: 0.76rem;
 }
 .colophon p { margin: 0; }
+
+.meaning-toggle {
+  display: flex; align-items: center; gap: 0.35rem;
+  font-size: 0.8rem; color: var(--muted);
+  white-space: nowrap; cursor: pointer;
+  padding: 0 0.2rem;
+}
+.meaning-toggle input { accent-color: var(--teal-bright); margin: 0; }
+.meaning-toggle:has(input:checked) { color: var(--teal-bright); }
+
+.degraded-notice {
+  font-size: 0.76rem; color: var(--warn);
+  margin: 0.4rem 0 0;
+}

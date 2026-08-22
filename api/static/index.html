@@ -61,6 +61,7 @@
         <button type="button" class="pill" data-status="complete">Complete</button>
         <button type="button" class="pill" data-status="in_progress">In progress</button>
       </div>
+      <label class="check"><input type="checkbox" id="onlyCrossovers"> Crossovers only</label>
       <label class="check"><input type="checkbox" id="excludeAbandoned"> Hide abandoned</label>
       <label class="check"><input type="checkbox" id="onlyAbandoned"> Only abandoned</label>
       <p class="hint">Abandoned = still open, untouched for over two years.</p>
@@ -92,6 +93,9 @@
   <main class="results-pane">
     <form class="searchbar" id="searchForm" role="search">
       <input type="search" id="queryInput" placeholder="Search titles, summaries and author names…" autocomplete="off">
+      <label class="meaning-toggle" title="Match summaries by meaning rather than by word — describe the story you want">
+        <input type="checkbox" id="semanticToggle"> by meaning
+      </label>
       <select id="sortSelect" aria-label="Sort order">
         <option value="updated">Recently updated</option>
         <option value="published">Recently published</option>
@@ -101,6 +105,7 @@
         <option value="reviews">Most reviewed</option>
         <option value="words">Longest</option>
         <option value="relevance">Relevance</option>
+        <option value="semantic">Closest meaning</option>
       </select>
       <button type="submit">Search</button>
     </form>

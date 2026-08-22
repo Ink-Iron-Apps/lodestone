@@ -20,6 +20,9 @@ MAX_PAGE_SIZE = 100
 
 class SortOrder(enum.StrEnum):
     RELEVANCE = "relevance"
+    # Nearest-neighbour on the summary embedding. Only meaningful alongside a
+    # semantic query, and falls back to recency without one.
+    SEMANTIC = "semantic"
     UPDATED = "updated"
     PUBLISHED = "published"
     FAVORITES = "favorites"
@@ -48,6 +51,13 @@ ABANDONED_AFTER = "2 years"
 @dataclasses.dataclass(slots=True)
 class SearchFilters:
     query: Optional[str] = None
+
+    # Free text matched by meaning rather than by word. This is the query FFN
+    # cannot express at all: nothing about "competent time-travel Harry who is
+    # not a Gary Stu" need appear literally in the summary of a story that is
+    # exactly that. Carries the already-embedded vector, not the text, so the
+    # API layer owns the model call.
+    semanticVector: Optional[str] = None
 
     fandoms: list[str] = dataclasses.field(default_factory=list)
     ratings: list[str] = dataclasses.field(default_factory=list)
@@ -82,6 +92,11 @@ def buildWhereClause(filters: SearchFilters) -> tuple[str, dict[str, Any]]:
     """Return an SQL WHERE body plus its bound parameters."""
     conditions = ["s.deleted_at IS NULL"]
     parameters: dict[str, Any] = {}
+
+    if filters.semanticVector:
+        # Stories crawled before the embedding pass have no vector; including
+        # them would put unranked rows in the middle of a ranked list.
+        conditions.append("s.summary_embedding IS NOT NULL")
 
     if filters.query:
         # websearch_to_tsquery gives users quoted phrases and OR/- operators for
@@ -175,10 +190,15 @@ def buildWhereClause(filters: SearchFilters) -> tuple[str, dict[str, Any]]:
 def buildSearchQuery(filters: SearchFilters) -> tuple[str, dict[str, Any]]:
     whereBody, parameters = buildWhereClause(filters)
 
-    if filters.sort is SortOrder.RELEVANCE and filters.query:
+    if filters.semanticVector and filters.sort in (SortOrder.SEMANTIC, SortOrder.RELEVANCE):
+        # <=> is pgvector's cosine distance: smaller is closer, so ascending.
+        orderBy = "s.summary_embedding <=> %(semanticVector)s::vector ASC"
+        parameters["semanticVector"] = filters.semanticVector
+    elif filters.sort is SortOrder.RELEVANCE and filters.query:
         orderBy = "ts_rank(s.search_vector, websearch_to_tsquery('english', %(query)s)) DESC"
     else:
-        # Relevance is meaningless without a query, so fall back to recency.
+        # Relevance and semantic are both meaningless with nothing to rank
+        # against, so fall back to recency.
         orderBy = SORT_EXPRESSIONS.get(filters.sort, SORT_EXPRESSIONS[SortOrder.UPDATED])
 
     pageSize = min(filters.pageSize, MAX_PAGE_SIZE)

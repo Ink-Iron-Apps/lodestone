@@ -157,3 +157,62 @@ def testResultsAlwaysCarryATieBreaker():
     """Without a deterministic tie-break, pagination can repeat or skip rows."""
     sql, _ = buildSearchQuery(SearchFilters())
     assert "s.story_id DESC" in sql
+
+
+# --------------------------------------------------------------------------
+# Semantic search
+# --------------------------------------------------------------------------
+
+SAMPLE_VECTOR = "[" + ",".join(["0.1"] * 768) + "]"
+
+
+def testSemanticSearchExcludesUnembeddedStories():
+    """Rows crawled before the embedding pass have no vector. Including them
+    would drop unranked results into the middle of a ranked list."""
+    whereBody, _ = buildWhereClause(SearchFilters(semanticVector=SAMPLE_VECTOR))
+    assert "s.summary_embedding IS NOT NULL" in whereBody
+
+
+def testSemanticSortUsesCosineDistanceAscending():
+    sql, parameters = buildSearchQuery(
+        SearchFilters(semanticVector=SAMPLE_VECTOR, sort=SortOrder.SEMANTIC)
+    )
+    assert "s.summary_embedding <=> %(semanticVector)s::vector ASC" in sql
+    assert parameters["semanticVector"] == SAMPLE_VECTOR
+
+
+def testSemanticSortFallsBackWithoutAVector():
+    """If the embedding server was unreachable the request still has to answer,
+    so it degrades to recency rather than emitting invalid SQL."""
+    sql, parameters = buildSearchQuery(SearchFilters(sort=SortOrder.SEMANTIC))
+    assert "<=>" not in sql
+    assert "semanticVector" not in parameters
+    assert "s.updated_at DESC" in sql
+
+
+def testSemanticCombinesWithStructuredFilters():
+    """The actual differentiator: meaning-matching intersected with exclusions,
+    ships and completion state. Neither FFN nor AO3 can express this."""
+    sql, parameters = buildSearchQuery(SearchFilters(
+        semanticVector=SAMPLE_VECTOR,
+        sort=SortOrder.SEMANTIC,
+        excludedGenres=["Romance"],
+        ship=["A. Crowley", "Aziraphale"],
+        status="complete",
+        excludeAbandoned=True,
+    ))
+    assert "<=>" in sql
+    assert "NOT (s.genres && %(excludedGenres)s)" in sql
+    assert "jsonb_array_elements(s.ships)" in sql
+    assert "s.status = %(status)s::story_status" in sql
+    assert parameters["shipSize"] == 2
+
+
+def testRelevanceSortPrefersSemanticWhenAVectorIsPresent():
+    """A user who asked for meaning matching and left sort on Relevance should
+    get the vector ranking, not lexical ranking over a query they never gave."""
+    sql, _ = buildSearchQuery(
+        SearchFilters(semanticVector=SAMPLE_VECTOR, sort=SortOrder.RELEVANCE)
+    )
+    assert "<=>" in sql
+    assert "ts_rank" not in sql
