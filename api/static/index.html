@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lodestone — FanFiction.Net search</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Lodestone</h1>
+        <p class="tagline">Search FanFiction.Net the way its own search cannot.</p>
+      </div>
+    </div>
+    <dl class="corpus-stats" id="corpusStats"></dl>
+  </div>
+</header>
+
+<div class="layout">
+
+  <aside class="filters" id="filters">
+    <div class="filter-head">
+      <h2>Filters</h2>
+      <button type="button" class="link-button" id="resetFilters">Reset</button>
+    </div>
+
+    <section class="filter-group">
+      <h3>Fandom</h3>
+      <select id="fandomSelect"><option value="">All fandoms</option></select>
+    </section>
+
+    <section class="filter-group">
+      <h3>Genre <span class="hint">click twice to exclude</span></h3>
+      <div class="pill-row" id="genrePills"></div>
+    </section>
+
+    <section class="filter-group">
+      <h3>Characters <span class="hint">click twice to exclude</span></h3>
+      <input type="search" id="characterInput" list="characterOptions" placeholder="Add a character…" autocomplete="off">
+      <datalist id="characterOptions"></datalist>
+      <div class="pill-row" id="characterPills"></div>
+    </section>
+
+    <section class="filter-group">
+      <h3>Relationship</h3>
+      <select id="shipSelect"><option value="">Any</option></select>
+      <p class="hint">Paired together, not merely both present — a distinction FFN's own filters cannot draw.</p>
+    </section>
+
+    <section class="filter-group">
+      <h3>Status</h3>
+      <div class="pill-row" id="statusPills">
+        <button type="button" class="pill" data-status="complete">Complete</button>
+        <button type="button" class="pill" data-status="in_progress">In progress</button>
+      </div>
+      <label class="check"><input type="checkbox" id="excludeAbandoned"> Hide abandoned</label>
+      <label class="check"><input type="checkbox" id="onlyAbandoned"> Only abandoned</label>
+      <p class="hint">Abandoned = still open, untouched for over two years.</p>
+    </section>
+
+    <section class="filter-group">
+      <h3>Rating</h3>
+      <div class="pill-row" id="ratingPills"></div>
+    </section>
+
+    <section class="filter-group">
+      <h3>Language</h3>
+      <select id="languageSelect"><option value="">Any language</option></select>
+    </section>
+
+    <section class="filter-group">
+      <h3>Length &amp; reception</h3>
+      <div class="field-row">
+        <label>Min words <input type="number" id="minWords" min="0" step="1000" placeholder="0"></label>
+        <label>Max words <input type="number" id="maxWords" min="0" step="1000" placeholder="∞"></label>
+      </div>
+      <div class="field-row">
+        <label>Min favourites <input type="number" id="minFavorites" min="0" placeholder="0"></label>
+        <label>Min chapters <input type="number" id="minChapters" min="1" placeholder="1"></label>
+      </div>
+    </section>
+  </aside>
+
+  <main class="results-pane">
+    <form class="searchbar" id="searchForm" role="search">
+      <input type="search" id="queryInput" placeholder="Search titles, summaries and author names…" autocomplete="off">
+      <select id="sortSelect" aria-label="Sort order">
+        <option value="updated">Recently updated</option>
+        <option value="published">Recently published</option>
+        <option value="favorites">Most favourited</option>
+        <option value="favorites_per_1k">Favourites per 1K words</option>
+        <option value="follows">Most followed</option>
+        <option value="reviews">Most reviewed</option>
+        <option value="words">Longest</option>
+        <option value="relevance">Relevance</option>
+      </select>
+      <button type="submit">Search</button>
+    </form>
+
+    <div class="result-meta">
+      <p id="resultCount" aria-live="polite">Loading…</p>
+      <div class="active-filters" id="activeFilters"></div>
+    </div>
+
+    <ol class="story-list" id="storyList"></ol>
+
+    <nav class="pager" id="pager" hidden>
+      <button type="button" id="prevPage">← Previous</button>
+      <span id="pageLabel"></span>
+      <button type="button" id="nextPage">Next →</button>
+    </nav>
+  </main>
+
+</div>
+
+<footer class="colophon">
+  <p>Lodestone indexes metadata and links back to <a href="https://www.fanfiction.net/">fanfiction.net</a>. It hosts no stories and stores no story text.</p>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -10,8 +10,8 @@ abandoned in 2013. Every piece of metadata needed to do better is already on the
 page. Lodestone collects it, normalizes it, and puts a real query engine in
 front of it.
 
-**Status: early.** The crawler and parser are built and tested against live
-pages. The API and web front end are not written yet.
+**Status: early.** The crawler, parser, search API and web front end all work.
+The corpus is currently a single pilot fandom; a full backfill has not been run.
 
 ## What it makes possible
 
@@ -65,9 +65,15 @@ the 14.6 million a story-by-story crawl would need.
                       └────────────┬─────────────┘
                                    │
                       ┌────────────▼─────────────┐
-                      │  API  →  web front end   │  not yet built
+                      │  FastAPI  →  web UI      │
                       └──────────────────────────┘
 ```
+
+Meilisearch is wired into the compose file but the API queries Postgres
+directly: at present scale the GIN and btree indexes answer every filter in
+single-digit milliseconds, and going straight to the system of record means
+there is no projection to drift out of sync. Meilisearch earns its place when
+Postgres FTS ranking stops being good enough, not before.
 
 ## Crawling responsibly
 
@@ -97,18 +103,24 @@ advisory:
 
 ```bash
 cp .env.example .env      # then edit it
-docker compose up -d postgres meilisearch
+docker compose up -d      # postgres, meilisearch, api
 
-cd crawler
-python -m venv .venv && .venv/bin/pip install -e '.[dev]'
+python -m venv .venv && .venv/bin/pip install -e './crawler[dev]' -e './api[dev]'
 
 # No database needed: proves the egress works and prints parsed rows.
-.venv/bin/python -m lodestone_crawler probe
+./scripts/dev.sh crawl probe
 
 # Enumerate every fandom, then walk one archive.
-.venv/bin/python -m lodestone_crawler discover
-.venv/bin/python -m lodestone_crawler backfill --section book --fandom Harry-Potter --max-pages 20
+./scripts/dev.sh crawl discover
+./scripts/dev.sh crawl backfill --section book --fandom Good-Omens --name 'Good Omens'
+
+# Serve the UI on http://localhost:8099
+./scripts/dev.sh serve
 ```
+
+`scripts/dev.sh` reads credentials from `.env` so they never reach a shell
+history. `scripts/smoke_api.sh` exercises every headline capability against a
+running API and prints the result counts.
 
 ### The crawler must run from a residential connection
 
@@ -122,10 +134,12 @@ such constraint and can be hosted anywhere.
 ## Tests
 
 ```bash
-cd crawler && .venv/bin/python -m pytest
+cd crawler && python -m pytest    # parser
+cd api     && python -m pytest    # query builder
 ```
 
-Two layers: hand-written grammar cases pinning the awkward parts (the slash
+The API tests assert on generated SQL and bound parameters, so they need no
+database. The parser tests have two layers: hand-written grammar cases pinning the awkward parts (the slash
 inside `Hurt/Comfort`, ship brackets, fandom names containing the field
 separator), and shape invariants run against snapshots of real pages. The
 snapshots are verbatim FFN HTML, so they are not committed; generate them with
