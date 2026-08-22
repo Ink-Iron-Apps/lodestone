@@ -22,9 +22,16 @@ pythonBin="$projectRoot/.venv/bin/python"
 
 case "${1:-serve}" in
     serve)
+        # --reload makes WatchFiles walk the source tree, which lives on a
+        # Windows drive mounted into WSL. Under load that is slow enough for the
+        # reloader to start, log "Uvicorn running", and never spawn a worker --
+        # so the server looks healthy while every request times out. Opt in
+        # while editing; the default stays reliable.
         cd api
+        reloadFlag=()
+        [[ "${LODESTONE_RELOAD:-0}" == "1" ]] && reloadFlag=(--reload)
         exec "$projectRoot/.venv/bin/uvicorn" lodestone_api.main:app \
-            --host 127.0.0.1 --port "${LODESTONE_PORT:-8099}" --reload
+            --host 127.0.0.1 --port "${LODESTONE_PORT:-8099}" "${reloadFlag[@]}"
         ;;
     psql)
         exec docker exec -it lodestone-postgres-1 \
