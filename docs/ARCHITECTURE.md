@@ -97,6 +97,29 @@ Update-date sort here = rows migrate between pages = silent skips.
 **Refresh = sort by UPDATE date (srt=1)**, head N pages. Churn is the point.
 Backfill alone → index correct once, wrong forever.
 
+## Pilot: Good Omens (2026-08-21)
+
+`/book/Good-Omens/` backfill → exhaustion. 72 reqs, **0 retries, 0 blocks**, 7min wall (342s of it deliberate crawl-delay).
+
+- 1,764 stories, 845 authors, 1,194 complete, 152 w/ ships, 8 langs, published 2001-04-15 → 2026-04-28
+- resume re-run → 0 reqs (`already exhausted`) ✓
+- fandom discovery: 13,115 fandoms in 9 reqs / 55s
+- **crossovers = 0** → empirically confirms crossovers live ONLY in crossover archives, absent from parent fandom archive. Crossover crawl is NOT optional.
+- ratings incl **M** → confirms `r=10` needed; FFN default would've silently dropped them
+- 8 langs parsed positionally, all correct → no lang whitelist needed
+
+### QA: 0 anomalies / 1764 rows
+
+null rating/lang/words/published = 0 · updated<published = 0 · bogus genre = 0 · >2 genres = 0 · char-that-is-really-a-count = 0 · empty title = 0 · markup leaked into summary = 0.
+
+### Sizing (measured, not estimated)
+
+704 kB / 1,764 rows = **~409 B/row** → 12M rows ≈ **4.6 GB** table. Matches the affordability premise.
+
+### Bug found + fixed
+
+`crawl_state.rows_ingested` was 2× true count. `recordCrawlProgress` accumulates (`rows_ingested + EXCLUDED`), and terminal calls (exhausted/error) re-passed the whole run total on top of the per-page calls. → terminal calls now pass `NO_NEW_ROWS`.
+
 ## Open items
 
 - `/crossovers/<Fandom>/<catId>/` (partner list) → FFN `Error Type 1` from curl_cffi, works in browser. Tried: warm session, referer, full browser hdrs, no-slash. Unresolved. Workaround: `/crossovers/<section>/` dir works, crossover archives work → discover pairs from crossover rows.
