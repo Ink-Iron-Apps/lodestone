@@ -35,6 +35,11 @@ ROBOTS_CRAWL_DELAY_SECONDS = 5.0
 # is not proof of success.
 SERVER_ERROR_MARKER = "FanFiction.Net Error Type"
 
+# A bad category id or slug also returns HTTP 200, with a "Link Error" body.
+# Without this check a mistyped id looks exactly like a fandom that genuinely
+# has no crossover partners -- silently, and with no error anywhere.
+NOT_FOUND_MARKER = "The page you are looking for does not exist"
+
 # Identify honestly and give operators a way to reach us. robots.txt permits
 # search indexing; hiding would undercut the one basis we have for being here.
 USER_AGENT_SUFFIX = "Lodestone/0.1 (+https://github.com/Ink-Iron-Apps/lodestone)"
@@ -46,6 +51,14 @@ class FetchError(RuntimeError):
 
 class BlockedError(FetchError):
     """Raised on a 403, which means Cloudflare stopped trusting this egress."""
+
+
+class NotFoundError(FetchError):
+    """Raised for FFN's soft 404, which arrives as a styled HTTP 200 page.
+
+    Kept distinct from FetchError because it is permanent: retrying a bad slug
+    or category id will never succeed, so it is raised without burning retries.
+    """
 
 
 @dataclasses.dataclass(slots=True)
@@ -139,6 +152,9 @@ class FanFictionFetcher:
                 continue
 
             html = response.content.decode("utf-8", errors="replace")
+
+            if NOT_FOUND_MARKER in html:
+                raise NotFoundError(f"FFN soft 404 for {url} -- bad slug or category id")
 
             if SERVER_ERROR_MARKER in html:
                 # FFN's own application error, served as 200. Transient often

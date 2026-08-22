@@ -184,3 +184,46 @@ class StoryStore:
             affected = cursor.rowcount
         self._connection.commit()
         return affected
+
+    # -- crossover pairs ---------------------------------------------------
+
+    def upsertCrossoverPairs(self, pairs: list[tuple[int, int, str, str]]) -> int:
+        """Record discovered crossover pairs.
+
+        Pairs arrive already ordered by ascending category id, which is how FFN
+        builds the archive URL. Because each pair is listed on both partners'
+        pages, the same tuple is discovered twice and the conflict clause makes
+        the second sighting free.
+        """
+        if not pairs:
+            return 0
+        with self._connection.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO crossover_pairs (fandom_id_a, fandom_id_b, slug_a, slug_b) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                pairs,
+            )
+        self._connection.commit()
+        return len(pairs)
+
+    def iterCrossoverPairs(self, limit: Optional[int] = None) -> list[dict]:
+        """Pairs whose archive has not yet been walked to exhaustion."""
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT p.fandom_id_a, p.fandom_id_b, p.slug_a, p.slug_b
+                FROM crossover_pairs p
+                LEFT JOIN crawl_state c
+                    ON c.surface_key = 'crossover:' || p.fandom_id_a || '/' || p.fandom_id_b
+                WHERE c.is_exhausted IS NOT TRUE
+                ORDER BY p.fandom_id_a, p.fandom_id_b
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return cursor.fetchall()
+
+    def countCrossoverPairs(self) -> int:
+        with self._connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) AS total FROM crossover_pairs")
+            return cursor.fetchone()["total"]

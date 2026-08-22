@@ -238,3 +238,49 @@ def iterFandomDirectory(html: str, sectionSlug: str) -> Iterator[Fandom]:
     pattern = re.compile(r'<a href="/' + re.escape(sectionSlug) + r'/([^/"]+)/"[^>]*>(.*?)</a>')
     for match in pattern.finditer(html):
         yield Fandom(name=stripTags(match.group(2)), sectionSlug=sectionSlug, fandomSlug=match.group(1))
+
+
+# ---------------------------------------------------------------------------
+# Crossovers
+# ---------------------------------------------------------------------------
+
+CROSSOVER_ENTRY_PATTERN = re.compile(
+    r'<a href="/crossovers/([^/"]+)/(\d+)/"[^>]*>(.*?)</a>'
+)
+CROSSOVER_PAIR_PATTERN = re.compile(
+    r'<a href="/([A-Za-z0-9._-]+)-and-([A-Za-z0-9._-]+)-Crossovers/(\d+)/(\d+)/"'
+)
+
+
+def iterCrossoverDirectory(html: str) -> Iterator[Fandom]:
+    """Yield fandoms that have a crossover archive, from /crossovers/<section>/.
+
+    This is the only place FFN exposes a fandom's numeric category id, which the
+    crossover archive URLs are built from.
+    """
+    for match in CROSSOVER_ENTRY_PATTERN.finditer(html):
+        yield Fandom(
+            name=stripTags(match.group(3)),
+            fandomSlug=match.group(1),
+            categoryId=int(match.group(2)),
+        )
+
+
+def parseCrossoverPairs(html: str) -> list[tuple[int, int, str, str]]:
+    """Extract (idA, idB, slugA, slugB) pairs from a fandom's partner list.
+
+    FFN orders the pair URL by ascending category id regardless of which
+    fandom's page you are on, so the tuple is already canonical and the same
+    pair discovered from either side deduplicates naturally.
+
+    That symmetry matters: the partner list for the very largest fandoms
+    (Harry Potter among them) faults server-side with FFN's own "Error Type 1",
+    but since every pair is listed on both partners' pages, nothing is lost as
+    long as the other side is crawled.
+    """
+    pairs = []
+    for match in CROSSOVER_PAIR_PATTERN.finditer(html):
+        slugA, slugB, idA, idB = match.group(1), match.group(2), int(match.group(3)), int(match.group(4))
+        if idA < idB:
+            pairs.append((idA, idB, slugA, slugB))
+    return pairs

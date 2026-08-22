@@ -8,6 +8,7 @@
 
 const state = {
   query: "",
+  isSemantic: false,
   genres: new Map(),      // value -> "include" | "exclude"
   characters: new Map(),
   fandom: "",
@@ -15,6 +16,7 @@ const state = {
   ratings: new Set(),
   language: "",
   status: "",
+  onlyCrossovers: false,
   excludeAbandoned: false,
   onlyAbandoned: false,
   minWords: null,
@@ -27,6 +29,7 @@ const state = {
 
 const elements = {
   queryInput: document.getElementById("queryInput"),
+  semanticToggle: document.getElementById("semanticToggle"),
   sortSelect: document.getElementById("sortSelect"),
   searchForm: document.getElementById("searchForm"),
   storyList: document.getElementById("storyList"),
@@ -42,6 +45,7 @@ const elements = {
   shipSelect: document.getElementById("shipSelect"),
   languageSelect: document.getElementById("languageSelect"),
   statusPills: document.getElementById("statusPills"),
+  onlyCrossovers: document.getElementById("onlyCrossovers"),
   excludeAbandoned: document.getElementById("excludeAbandoned"),
   onlyAbandoned: document.getElementById("onlyAbandoned"),
   minWords: document.getElementById("minWords"),
@@ -70,7 +74,9 @@ function cycleTriState(currentState) {
 
 function buildSearchParams() {
   const params = new URLSearchParams();
-  if (state.query) params.set("q", state.query);
+  // The same box drives both modes: "by meaning" sends the text to be embedded
+  // and ranked by vector distance, otherwise it is a literal keyword match.
+  if (state.query) params.set(state.isSemantic ? "semantic" : "q", state.query);
   if (state.fandom) params.append("fandom", state.fandom);
   if (state.language) params.append("language", state.language);
   if (state.status) params.set("status", state.status);
@@ -90,6 +96,9 @@ function buildSearchParams() {
     for (const member of state.ship.split(" / ")) params.append("ship", member);
   }
 
+  // Crossovers live in no parent fandom archive on FFN, so they are
+  // effectively unfindable there. Here they are just another filter.
+  if (state.onlyCrossovers) params.set("crossover", "true");
   if (state.excludeAbandoned) params.set("excludeAbandoned", "true");
   if (state.onlyAbandoned) params.set("onlyAbandoned", "true");
 
@@ -112,12 +121,14 @@ function syncUrl() {
 
 function restoreFromUrl() {
   const params = new URLSearchParams(location.search);
-  state.query = params.get("q") || "";
+  state.query = params.get("q") || params.get("semantic") || "";
+  state.isSemantic = params.has("semantic");
   state.fandom = params.get("fandom") || "";
   state.language = params.get("language") || "";
   state.status = params.get("status") || "";
   state.sort = params.get("sort") || "updated";
   state.page = Number(params.get("page")) || 1;
+  state.onlyCrossovers = params.get("crossover") === "true";
   state.excludeAbandoned = params.get("excludeAbandoned") === "true";
   state.onlyAbandoned = params.get("onlyAbandoned") === "true";
 
@@ -136,7 +147,9 @@ function restoreFromUrl() {
   }
 
   elements.queryInput.value = state.query;
+  elements.semanticToggle.checked = state.isSemantic;
   elements.sortSelect.value = state.sort;
+  elements.onlyCrossovers.checked = state.onlyCrossovers;
   elements.excludeAbandoned.checked = state.excludeAbandoned;
   elements.onlyAbandoned.checked = state.onlyAbandoned;
   for (const key of ["minWords", "maxWords", "minFavorites", "minChapters"]) {
@@ -204,6 +217,7 @@ function renderActiveFilters() {
   if (state.ship) chips.push(["Ship: " + state.ship, () => { state.ship = ""; elements.shipSelect.value = ""; }]);
   if (state.status) chips.push(["Status: " + state.status.replace("_", " "), () => { state.status = ""; syncStatusPills(); }]);
   if (state.language) chips.push(["Lang: " + state.language, () => { state.language = ""; elements.languageSelect.value = ""; }]);
+  if (state.onlyCrossovers) chips.push(["Crossovers only", () => { state.onlyCrossovers = false; elements.onlyCrossovers.checked = false; }]);
   if (state.onlyAbandoned) chips.push(["Only abandoned", () => { state.onlyAbandoned = false; elements.onlyAbandoned.checked = false; }]);
   if (state.excludeAbandoned) chips.push(["Hiding abandoned", () => { state.excludeAbandoned = false; elements.excludeAbandoned.checked = false; }]);
 
@@ -295,6 +309,7 @@ async function runSearch(resetPage = false) {
   if (resetPage) state.page = 1;
   syncUrl();
 
+  document.querySelector(".degraded-notice")?.remove();
   elements.resultCount.textContent = "Searching…";
   const response = await fetch(`/api/search?${buildSearchParams()}`);
   if (!response.ok) {
@@ -314,6 +329,14 @@ async function runSearch(resetPage = false) {
   }
 
   elements.resultCount.innerHTML = `<strong>${formatNumber(payload.total)}</strong> stories`;
+  if (state.isSemantic && state.query && !payload.semantic) {
+    // The API degrades to keyword search when the embedding server is down.
+    // Say so rather than passing off keyword results as semantic ones.
+    const notice = document.createElement("p");
+    notice.className = "degraded-notice";
+    notice.textContent = "Meaning search unavailable — showing keyword matches instead.";
+    elements.resultCount.after(notice);
+  }
   renderActiveFilters();
 
   const lastPage = Math.max(1, Math.ceil(payload.total / PAGE_SIZE));
@@ -408,6 +431,15 @@ elements.searchForm.addEventListener("submit", (event) => {
   runSearch(true);
 });
 
+elements.semanticToggle.addEventListener("change", () => {
+  state.isSemantic = elements.semanticToggle.checked;
+  // Ranking by meaning is the whole point of the mode, so switch to it; going
+  // back restores recency rather than leaving a dead sort selected.
+  state.sort = state.isSemantic ? "semantic" : "updated";
+  elements.sortSelect.value = state.sort;
+  if (state.query) runSearch(true);
+});
+
 elements.sortSelect.addEventListener("change", () => {
   state.sort = elements.sortSelect.value;
   runSearch(true);
@@ -439,6 +471,7 @@ for (const [element, key] of [
 }
 
 for (const [element, key] of [
+  [elements.onlyCrossovers, "onlyCrossovers"],
   [elements.excludeAbandoned, "excludeAbandoned"],
   [elements.onlyAbandoned, "onlyAbandoned"],
 ]) {

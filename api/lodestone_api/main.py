@@ -12,6 +12,7 @@ publicly while the crawler stays on a private residential connection.
 """
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Optional
@@ -23,6 +24,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 
+from .embedding import EmbeddingUnavailable, embedQuery, toPgVector
 from .queries import (
     FACET_QUERIES,
     STATS_QUERY,
@@ -35,6 +37,8 @@ DATABASE_DSN = os.environ.get(
     "LODESTONE_DSN", "postgresql://lodestone:lodestone@localhost:5433/lodestone"
 )
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+
+logger = logging.getLogger(__name__)
 
 connectionPool: Optional[psycopg_pool.ConnectionPool] = None
 
@@ -71,6 +75,7 @@ def runQuery(sql: str, parameters: dict[str, Any] | None = None) -> list[dict]:
 
 def parseFilters(
     q: Annotated[Optional[str], Query(description="Full-text query over title, author and summary")] = None,
+    semantic: Annotated[Optional[str], Query(description="Match summaries by meaning rather than by word")] = None,
     fandom: Annotated[list[str], Query()] = [],
     rating: Annotated[list[str], Query()] = [],
     language: Annotated[list[str], Query()] = [],
@@ -91,8 +96,18 @@ def parseFilters(
     page: Annotated[int, Query(ge=1)] = 1,
     pageSize: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> SearchFilters:
+    semanticVector = None
+    if semantic:
+        try:
+            semanticVector = toPgVector(embedQuery(semantic))
+        except EmbeddingUnavailable as error:
+            # Semantic search is an enhancement, not the core product. Degrade
+            # to the other filters rather than failing the whole request.
+            logger.warning("semantic search unavailable, falling back: %s", error)
+
     return SearchFilters(
-        query=q, fandoms=fandom, ratings=rating, languages=language,
+        query=q, semanticVector=semanticVector,
+        fandoms=fandom, ratings=rating, languages=language,
         genres=genre, excludedGenres=excludeGenre,
         characters=character, excludedCharacters=excludeCharacter,
         ship=ship, status=status, isCrossover=crossover,
@@ -121,6 +136,9 @@ def search(filters: Annotated[SearchFilters, Depends(parseFilters)]) -> dict:
         "total": totalCount,
         "page": filters.page,
         "pageSize": filters.pageSize,
+        # Makes a degraded semantic search visible to the caller instead of
+        # silently returning keyword results that look like semantic ones.
+        "semantic": filters.semanticVector is not None,
         "results": rows,
     }
 

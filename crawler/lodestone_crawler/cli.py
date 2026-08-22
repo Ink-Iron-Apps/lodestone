@@ -12,9 +12,18 @@ import logging
 import os
 import sys
 
+from .embeddings import backfillEmbeddings, buildVectorIndex
 from .fetcher import BlockedError, FanFictionFetcher
 from .models import Fandom
-from .pipeline import backfillFandom, discoverFandoms, pollJustIn, refreshFandom
+from .pipeline import (
+    backfillCrossovers,
+    backfillFandom,
+    discoverCrossoverPairs,
+    discoverFandoms,
+    discoverPairsForFandom,
+    pollJustIn,
+    refreshFandom,
+)
 from .storage import StoryStore
 from .surfaces import justInUrl
 from .parser import parseListingPage
@@ -32,8 +41,27 @@ def buildParser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("discover", help="enumerate every fandom in every section directory")
+
+    crossoverDiscoverParser = subparsers.add_parser(
+        "discover-crossovers", help="enumerate every A-x-B crossover archive")
+    crossoverDiscoverParser.add_argument("--max-fandoms", type=int, default=None)
+    crossoverDiscoverParser.add_argument("--fandom", help="slug; discover only this fandom's pairs")
+    crossoverDiscoverParser.add_argument("--category-id", type=int, help="required with --fandom")
+
+    crossoverBackfillParser = subparsers.add_parser(
+        "backfill-crossovers", help="walk crossover archives that are not yet exhausted")
+    crossoverBackfillParser.add_argument("--max-pairs", type=int, default=None)
+    crossoverBackfillParser.add_argument("--max-pages-per-pair", type=int, default=None)
+
     subparsers.add_parser("justin", help="ingest the newest 100 stories site-wide")
     subparsers.add_parser("probe", help="fetch one page and print parsed rows; touches no database")
+
+    embedParser = subparsers.add_parser(
+        "embed", help="compute summary embeddings for stories missing them")
+    embedParser.add_argument("--batch-size", type=int, default=64)
+    embedParser.add_argument("--limit", type=int, default=None)
+    embedParser.add_argument("--build-index", action="store_true",
+                             help="build the HNSW index afterwards; do this once, after a backfill")
 
     backfillParser = subparsers.add_parser("backfill", help="walk a fandom archive to exhaustion")
     backfillParser.add_argument("--section", required=True)
@@ -77,10 +105,39 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.command == "probe":
         return runProbe(fetcher)
 
+    if arguments.command == "embed":
+        # Embedding talks to the local model server, never to FFN, so it does
+        # not go through the fetcher or its crawl delay.
+        embeddedCount = backfillEmbeddings(
+            arguments.dsn, batchSize=arguments.batch_size, limit=arguments.limit)
+        print(f"embedded {embeddedCount} stories")
+        if arguments.build_index:
+            buildVectorIndex(arguments.dsn)
+            print("HNSW index built")
+        return 0
+
     try:
         with StoryStore(arguments.dsn) as store:
             if arguments.command == "discover":
                 print(f"discovered {discoverFandoms(fetcher, store)} fandoms")
+
+            elif arguments.command == "discover-crossovers":
+                if arguments.fandom:
+                    if not arguments.category_id:
+                        print("--fandom requires --category-id", file=sys.stderr)
+                        return 1
+                    discoverPairsForFandom(fetcher, store, arguments.fandom, arguments.category_id)
+                else:
+                    discoverCrossoverPairs(fetcher, store, maxFandoms=arguments.max_fandoms)
+                print(f"{store.countCrossoverPairs()} crossover pairs known")
+
+            elif arguments.command == "backfill-crossovers":
+                pairsCrawled, rowsIngested = backfillCrossovers(
+                    fetcher, store,
+                    maxPairs=arguments.max_pairs,
+                    maxPagesPerPair=arguments.max_pages_per_pair,
+                )
+                print(f"{pairsCrawled} pairs crawled, {rowsIngested} rows")
 
             elif arguments.command == "justin":
                 outcome = pollJustIn(fetcher, store)

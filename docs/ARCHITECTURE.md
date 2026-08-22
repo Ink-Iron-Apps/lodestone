@@ -120,10 +120,42 @@ null rating/lang/words/published = 0 · updated<published = 0 · bogus genre = 0
 
 `crawl_state.rows_ingested` was 2× true count. `recordCrawlProgress` accumulates (`rows_ingested + EXCLUDED`), and terminal calls (exhausted/error) re-passed the whole run total on top of the per-page calls. → terminal calls now pass `NO_NEW_ROWS`.
 
+## Crossovers (2026-08-22) — RESOLVED
+
+Earlier note said partner list "works in browser" → **wrong**. Never actually loaded one; only saw the links listed on `/crossovers/<section>/`.
+
+Truth: endpoint works fine. **Harry Potter alone faults** (`Error Type 1`, server-side, presumably timeout on largest list). Naruto→1,949 pairs, Twilight→2,093, PJO→1,767 all fine.
+
+**Not a problem**: FFN lists each pair on BOTH partners' pages, URL ordered by ascending category id either way → same canonical tuple. HP×Naruto recovered from Naruto's list. A faulted partner list costs zero coverage.
+
+Discovery = 2 hops: `/crossovers/<section>/` → (slug, **categoryId** — only place FFN exposes it) → `/crossovers/<slug>/<catId>/` → pairs.
+
+`crossoverArchiveUrl` normalizes arg order; reversed form 404s.
+
+### Soft 404 trap
+
+Guessed Good-Omens catId=3457 → HTTP **200** + "Link Error" body + 0 pairs. Indistinguishable from "fandom has no crossovers". → `NOT_FOUND_MARKER` + `NotFoundError` (permanent, no retries). Real id = 1182.
+
+### Pilot result
+
+78 pairs, 161 reqs, 0 retries, **277 crossover stories**. Corpus 1,764 → 2,041. Confirms: crossovers absent from parent archives, crossover crawl mandatory.
+
+## Embeddings (2026-08-22)
+
+`nomic-embed-text` **768-dim** (not all-minilm/384 — pull died on TLS timeout, nomic already local + stronger). Migration 004 drops+recreates column; never pad/truncate across models, cosine becomes noise.
+
+**Ollama gotcha**: WSL `127.0.0.1:11434` = wedged CPU instance (0.30.5, >5min no response). Native Win GPU = `[::1]:11434` (0.32.14), 3.8s. From WSL reach it via default gateway → `LODESTONE_EMBEDDING_HOST` in `.env`. Gateway IP changes on WSL restart.
+
+2,041 embedded in ~2min on GPU. HNSW built after, not before.
+
+API embeds query-side with same model (separate minimal client — API deployable without crawler deps). Embedding server down → degrade to keyword, `semantic: false` in response, UI says so. Never pass keyword results off as semantic.
+
+Semantic ∩ structured filters is the real differentiator — neither FFN nor AO3 can do it.
+
 ## Open items
 
-- `/crossovers/<Fandom>/<catId>/` (partner list) → FFN `Error Type 1` from curl_cffi, works in browser. Tried: warm session, referer, full browser hdrs, no-slash. Unresolved. Workaround: `/crossovers/<section>/` dir works, crossover archives work → discover pairs from crossover rows.
 - Char IDs are global ints (`177975=Daisuke K.`) in filter form → harvest for canonical char entity resolution. Not wired yet.
 - Story page fields listings lack: chapter titles, cover art. Only fetch when needed, never bulk.
-- API + web: not written.
+- Full backfill not run. Corpus = Good Omens + its 78 crossover archives.
+- Meili still unused; PG direct is fine at this scale.
 - Corpus size: max story_id 14,584,841 @ 2026-08-21. Live count unknown (deletions).

@@ -58,8 +58,23 @@ def sectionDirectoryUrl(sectionSlug: str) -> str:
 
 
 def crossoverDirectoryUrl(sectionSlug: str) -> str:
-    """Directory of fandoms that have crossover archives, with their category ids."""
+    """Directory of fandoms that have crossover archives, with their category ids.
+
+    This is the only surface on which FFN exposes a fandom's numeric category
+    id, which every crossover archive URL is built from.
+    """
     return f"{FFN_ORIGIN}/crossovers/{sectionSlug}/"
+
+
+def fandomCrossoverPartnersUrl(fandomSlug: str, categoryId: int) -> str:
+    """Every fandom this one has been crossed with.
+
+    Faults with FFN's own "Error Type 1" for the very largest fandoms -- Harry
+    Potter among them, presumably a server-side timeout on a list that long.
+    That is survivable rather than fatal: FFN lists each pair on *both*
+    partners' pages, so a pair lost here is recovered from the other side.
+    """
+    return f"{FFN_ORIGIN}/crossovers/{fandomSlug}/{categoryId}/"
 
 
 def fandomBrowseUrl(
@@ -107,6 +122,12 @@ def crossoverArchiveUrl(
     fandom's own archive, which is precisely why FFN's browse makes them so hard
     to find and why indexing them is one of the bigger wins on offer.
     """
+    if categoryIdA > categoryIdB:
+        # FFN orders the pair URL by ascending category id no matter which
+        # partner's page you arrived from. Emitting the other order 404s.
+        fandomSlugA, fandomSlugB = fandomSlugB, fandomSlugA
+        categoryIdA, categoryIdB = categoryIdB, categoryIdA
+
     query = {"srt": int(sort), "r": 10, "p": pageNumber}
     path = f"{fandomSlugA}-and-{fandomSlugB}-Crossovers/{categoryIdA}/{categoryIdB}"
     return f"{FFN_ORIGIN}/{path}/?{urllib.parse.urlencode(query)}"
