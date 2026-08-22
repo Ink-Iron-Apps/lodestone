@@ -25,6 +25,14 @@ from .parser import (
     parseListingPage,
 )
 from .storage import StoryStore
+# A listing page that comes back short is the last page: FFN fills pages
+# completely until it runs out. Detecting exhaustion this way, rather than by
+# fetching the next (empty) page, saves one request per archive. Across ~13K
+# fandoms and ~158K crossover pairs that is ~165K requests -- roughly a quarter
+# of a full backfill, or eleven days of wall clock at the robots.txt crawl
+# delay. See scripts/estimate_backfill.py.
+FANDOM_PAGE_SIZE = 25
+
 from .surfaces import (
     SECTION_SLUGS,
     BrowseSort,
@@ -111,6 +119,15 @@ def backfillFandom(
             return outcome
 
         outcome.rowsIngested += store.upsertStories(records)
+
+        if len(records) < FANDOM_PAGE_SIZE:
+            outcome.isExhausted = True
+            outcome.stoppedReason = "short page"
+            store.recordCrawlProgress(surfaceKey, pageNumber, len(records), isExhausted=True)
+            logger.info("%s p=%d -> %d rows (%d total, exhausted)", surfaceKey,
+                        pageNumber, len(records), outcome.rowsIngested)
+            return outcome
+
         store.recordCrawlProgress(surfaceKey, pageNumber, len(records))
         logger.info("%s p=%d -> %d rows (%d total)", surfaceKey, pageNumber,
                     len(records), outcome.rowsIngested)
@@ -314,6 +331,15 @@ def backfillCrossoverPair(
             return outcome
 
         outcome.rowsIngested += store.upsertStories(records)
+
+        if len(records) < FANDOM_PAGE_SIZE:
+            # Most crossover archives hold a handful of stories, so this is the
+            # common case rather than an edge case.
+            outcome.isExhausted = True
+            outcome.stoppedReason = "short page"
+            store.recordCrawlProgress(surfaceKey, pageNumber, len(records), isExhausted=True)
+            return outcome
+
         store.recordCrawlProgress(surfaceKey, pageNumber, len(records))
         pageNumber += 1
 
