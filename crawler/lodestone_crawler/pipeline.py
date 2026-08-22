@@ -65,6 +65,12 @@ def backfillFandom(
     outcome = CrawlOutcome(surfaceKey)
     pageNumber = startPage
 
+    # `recordCrawlProgress` accumulates rows, and the per-page call below already
+    # contributes every row. The terminal calls exist only to persist the
+    # exhausted/error flag, so they must report zero new rows or the running
+    # total gets counted twice.
+    NO_NEW_ROWS = 0
+
     while maxPages is None or outcome.pagesFetched < maxPages:
         url = fandomBrowseUrl(
             fandom.sectionSlug, fandom.fandomSlug,
@@ -75,12 +81,12 @@ def backfillFandom(
         except BlockedError:
             # Egress has lost Cloudflare's trust. Stop everything -- retrying
             # only deepens the block and there is nothing to gain by continuing.
-            store.recordCrawlProgress(surfaceKey, pageNumber - 1, outcome.rowsIngested,
+            store.recordCrawlProgress(surfaceKey, pageNumber - 1, NO_NEW_ROWS,
                                       lastError="blocked")
             outcome.stoppedReason = "blocked"
             raise
         except FetchError as error:
-            store.recordCrawlProgress(surfaceKey, pageNumber - 1, outcome.rowsIngested,
+            store.recordCrawlProgress(surfaceKey, pageNumber - 1, NO_NEW_ROWS,
                                       lastError=str(error))
             outcome.stoppedReason = f"fetch failed: {error}"
             return outcome
@@ -93,7 +99,7 @@ def backfillFandom(
             # it means the fandom is empty, which is equally terminal.
             outcome.isExhausted = True
             outcome.stoppedReason = "no rows"
-            store.recordCrawlProgress(surfaceKey, pageNumber - 1, outcome.rowsIngested, isExhausted=True)
+            store.recordCrawlProgress(surfaceKey, pageNumber - 1, NO_NEW_ROWS, isExhausted=True)
             return outcome
 
         outcome.rowsIngested += store.upsertStories(records)
