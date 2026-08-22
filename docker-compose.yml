@@ -32,6 +32,24 @@ services:
     ports:
       - "127.0.0.1:7700:7700"
 
+  api:
+    build: ./api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LODESTONE_DSN: postgresql://${POSTGRES_USER:-lodestone}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lodestone}
+    # Read-only service: it issues no writes and needs no residential egress, so
+    # unlike the crawler this is the piece that can be exposed publicly.
+    ports:
+      - "127.0.0.1:8099:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/api/healthz')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
   crawler:
     build: ./crawler
     restart: unless-stopped

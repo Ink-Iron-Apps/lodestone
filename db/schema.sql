@@ -86,6 +86,20 @@ CREATE TABLE IF NOT EXISTS stories (
     ) STORED
 );
 
+-- Full-text search over title + author + summary, weighted so a title match
+-- outranks a summary mention. FFN's own search matches title and summary only,
+-- and cannot search author names at all.
+ALTER TABLE stories
+    ADD COLUMN IF NOT EXISTS search_vector tsvector
+    GENERATED ALWAYS AS (
+        setweight(to_tsvector('english', title), 'A') ||
+        setweight(to_tsvector('english', author_name), 'B') ||
+        setweight(to_tsvector('english', summary), 'C')
+    ) STORED;
+
+CREATE INDEX IF NOT EXISTS stories_search_idx ON stories USING gin (search_vector);
+CREATE INDEX IF NOT EXISTS stories_title_trgm_idx ON stories USING gin (title gin_trgm_ops);
+
 CREATE INDEX IF NOT EXISTS stories_updated_idx     ON stories (updated_at DESC);
 CREATE INDEX IF NOT EXISTS stories_published_idx   ON stories (published_at DESC);
 CREATE INDEX IF NOT EXISTS stories_author_idx      ON stories (author_id);
