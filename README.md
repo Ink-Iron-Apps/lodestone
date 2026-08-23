@@ -122,6 +122,22 @@ python -m venv .venv && .venv/bin/pip install -e './crawler[dev]' -e './api[dev]
 history. `scripts/smoke_api.sh` exercises every headline capability against a
 running API and prints the result counts.
 
+### Running it for real
+
+A full backfill takes weeks, so both long-running pieces belong under a service
+manager rather than a shell. Units are in `deploy/`:
+
+```bash
+sudo cp deploy/*.service /etc/systemd/system/
+sudo systemctl enable --now lodestone-api lodestone-backfill
+./scripts/progress.sh          # one-line status
+```
+
+The crawler is deliberately the lowest-priority thing on the machine — `Nice=15`,
+batch CPU scheduling, idle I/O, and a 1 GB ceiling against a ~40 MB working set —
+because it is expected to share a box with whatever else is running. It resumes
+from `crawl_state` after any interruption, so restarting it is always safe.
+
 ### The crawler must run from a residential connection
 
 FFN sits behind Cloudflare, which blocks on the TLS fingerprint rather than the
