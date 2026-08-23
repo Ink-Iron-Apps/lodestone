@@ -173,11 +173,33 @@ def testSemanticSearchExcludesUnembeddedStories():
     assert "s.summary_embedding IS NOT NULL" in whereBody
 
 
+def testSemanticSearchUsesHammingPrefilterThenExactRerank():
+    """The full-precision index this would need does not fit in RAM, so the
+    indexed column is a binary quantization and the exact distance only ever
+    reranks the shortlist it returns."""
+    sql, parameters = buildSearchQuery(
+        SearchFilters(semanticVector=SAMPLE_VECTOR, sort=SortOrder.SEMANTIC)
+    )
+    assert "summary_embedding_bits <~> binary_quantize" in sql
+    assert "WITH candidates AS" in sql
+    assert parameters["candidateLimit"] >= 500
+
+
+def testSemanticFiltersApplyInsideTheCandidateStage():
+    """Filtering after the prefilter would let an exclusion empty the page while
+    matching stories sat just outside the shortlist."""
+    sql, _ = buildSearchQuery(SearchFilters(
+        semanticVector=SAMPLE_VECTOR, sort=SortOrder.SEMANTIC, excludedGenres=["Romance"]
+    ))
+    candidateStage = sql[sql.index("WITH candidates"):sql.index("ORDER BY s.summary_embedding_bits")]
+    assert "NOT (s.genres && %(excludedGenres)s)" in candidateStage
+
+
 def testSemanticSortUsesCosineDistanceAscending():
     sql, parameters = buildSearchQuery(
         SearchFilters(semanticVector=SAMPLE_VECTOR, sort=SortOrder.SEMANTIC)
     )
-    assert "s.summary_embedding <=> %(semanticVector)s::vector ASC" in sql
+    assert "s.summary_embedding <=> %(semanticVector)s::halfvec ASC" in sql
     assert parameters["semanticVector"] == SAMPLE_VECTOR
 
 
