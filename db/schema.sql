@@ -75,13 +75,19 @@ CREATE TABLE IF NOT EXISTS stories (
     last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at     TIMESTAMPTZ,
 
-    -- 768 to match nomic-embed-text. Must equal EMBEDDING_DIMENSIONS in
-    -- crawler/lodestone_crawler/embeddings.py; a mismatch is rejected there
-    -- rather than silently truncated.
-    summary_embedding vector(768),
+    -- Two-tier vector storage, chosen for RAM rather than disk. An HNSW index
+    -- over full vector(768) needs ~28GB of maintenance_work_mem at corpus
+    -- scale, which this hardware does not have. halfvec holds the values for
+    -- exact reranking; the derived bit column is what actually gets indexed,
+    -- at 96 bytes per story. See db/migrations/005_quantized_vectors.sql.
+    -- 768 must equal EMBEDDING_DIMENSIONS in crawler/lodestone_crawler/embeddings.py.
+    summary_embedding halfvec(768),
 
     -- Popularity per unit length. FFN sorts by raw favourites, which structurally
     -- buries every good short work under every long mediocre one.
+    summary_embedding_bits bit(768)
+        GENERATED ALWAYS AS (binary_quantize(summary_embedding)::bit(768)) STORED,
+
     favorites_per_1k_words NUMERIC GENERATED ALWAYS AS (
         CASE WHEN word_count > 0
              THEN ROUND((favorite_count::NUMERIC * 1000) / word_count, 4)
@@ -117,10 +123,11 @@ CREATE INDEX IF NOT EXISTS stories_last_seen_idx   ON stories (last_seen_at) WHE
 CREATE INDEX IF NOT EXISTS stories_abandoned_idx ON stories (updated_at)
     WHERE status = 'in_progress' AND deleted_at IS NULL;
 
--- Built after the initial backfill, not before -- HNSW construction on an empty
--- table then incrementally filled is far slower than one bulk build.
--- CREATE INDEX stories_embedding_idx ON stories
---     USING hnsw (summary_embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+-- Built after the initial backfill, not before -- one bulk build is far cheaper
+-- than maintaining the graph across millions of inserts.
+--   SET maintenance_work_mem = '4GB';
+--   CREATE INDEX stories_embedding_bits_idx ON stories
+--       USING hnsw (summary_embedding_bits bit_hamming_ops);
 
 -- ---------------------------------------------------------------------------
 -- Story <-> fandom (many-to-many: crossovers have exactly two)

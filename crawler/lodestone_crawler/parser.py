@@ -47,6 +47,9 @@ META_BLOCK_PATTERN = re.compile(r"<div class='z-padtop2 xgray'>(.*?)</div>", re.
 XUTIME_PATTERN = re.compile(r"<span[^>]*data-xutime='(\d+)'[^>]*>.*?</span>", re.S)
 TAG_PATTERN = re.compile(r"<[^>]+>")
 
+# FFN abbreviates directory counts: "852K", "1.2M".
+ABBREVIATION_MULTIPLIERS = {"": 1, "K": 1_000, "M": 1_000_000}
+
 COUNT_FIELDS = {
     "Chapters": "chapterCount",
     "Words": "wordCount",
@@ -235,9 +238,20 @@ def iterFandomDirectory(html: str, sectionSlug: str) -> Iterator[Fandom]:
     The story counts beside each entry are abbreviated ('852K'), so they are
     useful for prioritizing the crawl but not as ground truth.
     """
-    pattern = re.compile(r'<a href="/' + re.escape(sectionSlug) + r'/([^/"]+)/"[^>]*>(.*?)</a>')
+    pattern = re.compile(
+        r'<a href="/' + re.escape(sectionSlug) + r'/([^/"]+)/"[^>]*>(.*?)</a>'
+        r"(?:\s*<SPAN CLASS='gray'>\((\d+(?:\.\d+)?)([KM]?)\)</SPAN>)?"
+    )
     for match in pattern.finditer(html):
-        yield Fandom(name=stripTags(match.group(2)), sectionSlug=sectionSlug, fandomSlug=match.group(1))
+        storyCount = None
+        if match.group(3):
+            storyCount = int(float(match.group(3)) * ABBREVIATION_MULTIPLIERS[match.group(4)])
+        yield Fandom(
+            name=stripTags(match.group(2)),
+            sectionSlug=sectionSlug,
+            fandomSlug=match.group(1),
+            storyCount=storyCount,
+        )
 
 
 # ---------------------------------------------------------------------------

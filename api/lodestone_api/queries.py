@@ -47,6 +47,26 @@ SORT_EXPRESSIONS = {
 # this long. Two years is the threshold readers use in practice.
 ABANDONED_AFTER = "2 years"
 
+# How many rows the Hamming prefilter hands to the exact reranker. Larger means
+# better recall and more halfvec distance computations; 500 is comfortably
+# enough for a 25-row page.
+SEMANTIC_CANDIDATE_LIMIT = 500
+
+STORY_COLUMNS = """
+            s.story_id, s.title, s.author_id, s.author_name, s.summary,
+            s.rating, s.language, s.genres, s.characters, s.ships,
+            s.chapter_count, s.word_count, s.review_count, s.favorite_count,
+            s.follow_count, s.status, s.published_at, s.updated_at,
+            s.is_crossover, s.favorites_per_1k_words,
+            (s.status = 'in_progress'
+             AND s.updated_at < now() - interval '2 years') AS is_abandoned,
+            COALESCE(
+                (SELECT array_agg(f.name ORDER BY f.name)
+                 FROM story_fandoms sf JOIN fandoms f ON f.id = sf.fandom_id
+                 WHERE sf.story_id = s.story_id),
+                '{}'
+            ) AS fandoms"""
+
 
 @dataclasses.dataclass(slots=True)
 class SearchFilters:
@@ -191,8 +211,10 @@ def buildSearchQuery(filters: SearchFilters) -> tuple[str, dict[str, Any]]:
     whereBody, parameters = buildWhereClause(filters)
 
     if filters.semanticVector and filters.sort in (SortOrder.SEMANTIC, SortOrder.RELEVANCE):
-        # <=> is pgvector's cosine distance: smaller is closer, so ascending.
-        orderBy = "s.summary_embedding <=> %(semanticVector)s::vector ASC"
+        # Exact cosine distance on the halfvec column. Small is close, so
+        # ascending. The Hamming prefilter in buildSearchQuery narrows the
+        # candidate set first; this only ever reranks that shortlist.
+        orderBy = "s.summary_embedding <=> %(semanticVector)s::halfvec ASC"
         parameters["semanticVector"] = filters.semanticVector
     elif filters.sort is SortOrder.RELEVANCE and filters.query:
         orderBy = "ts_rank(s.search_vector, websearch_to_tsquery('english', %(query)s)) DESC"
@@ -205,21 +227,35 @@ def buildSearchQuery(filters: SearchFilters) -> tuple[str, dict[str, Any]]:
     parameters["limit"] = pageSize
     parameters["offset"] = (max(filters.page, 1) - 1) * pageSize
 
+    # Two-phase semantic search. The full-precision index this would otherwise
+    # need does not fit in this machine's RAM, so the indexed column is a
+    # binary quantization: Hamming distance over bit(768) narrows millions of
+    # rows to a shortlist using an index that costs 96 bytes per story, and the
+    # exact halfvec distance then reranks only that shortlist. Recall is close
+    # to a full-precision index at a fraction of the memory.
+    if filters.semanticVector and filters.sort in (SortOrder.SEMANTIC, SortOrder.RELEVANCE):
+        parameters["candidateLimit"] = max(pageSize * 10, SEMANTIC_CANDIDATE_LIMIT)
+        sql = f"""
+            WITH candidates AS (
+                SELECT s.story_id
+                FROM stories s
+                WHERE {whereBody}
+                ORDER BY s.summary_embedding_bits <~> binary_quantize(%(semanticVector)s::halfvec)
+                LIMIT %(candidateLimit)s
+            )
+            SELECT
+                {STORY_COLUMNS},
+                COUNT(*) OVER () AS total_count
+            FROM stories s
+            JOIN candidates c ON c.story_id = s.story_id
+            ORDER BY {orderBy}, s.story_id DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+        """
+        return sql, parameters
+
     sql = f"""
         SELECT
-            s.story_id, s.title, s.author_id, s.author_name, s.summary,
-            s.rating, s.language, s.genres, s.characters, s.ships,
-            s.chapter_count, s.word_count, s.review_count, s.favorite_count,
-            s.follow_count, s.status, s.published_at, s.updated_at,
-            s.is_crossover, s.favorites_per_1k_words,
-            (s.status = 'in_progress'
-             AND s.updated_at < now() - interval '{ABANDONED_AFTER}') AS is_abandoned,
-            COALESCE(
-                (SELECT array_agg(f.name ORDER BY f.name)
-                 FROM story_fandoms sf JOIN fandoms f ON f.id = sf.fandom_id
-                 WHERE sf.story_id = s.story_id),
-                '{{}}'
-            ) AS fandoms,
+            {STORY_COLUMNS},
             COUNT(*) OVER () AS total_count
         FROM stories s
         WHERE {whereBody}

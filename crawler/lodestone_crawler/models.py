@@ -29,6 +29,9 @@ class Fandom:
     sectionSlug: Optional[str] = None
     fandomSlug: Optional[str] = None
     categoryId: Optional[int] = None
+    # Abbreviated on FFN's directory pages ("852K"), so good enough to order a
+    # crawl by size but not to trust as a count.
+    storyCount: Optional[int] = None
 
 
 @dataclasses.dataclass(slots=True)

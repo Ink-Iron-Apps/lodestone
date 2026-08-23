@@ -59,4 +59,5 @@ def embedQuery(text: str) -> list[float]:
 
 
 def toPgVector(vector: list[float]) -> str:
+    """pgvector's literal text form, cast to halfvec at the call site."""
     return "[" + ",".join(f"{value:.6f}" for value in vector) + "]"

@@ -17,6 +17,7 @@ from .fetcher import BlockedError, FanFictionFetcher
 from .models import Fandom
 from .pipeline import (
     backfillCrossovers,
+    backfillEverything,
     backfillFandom,
     discoverCrossoverPairs,
     discoverFandoms,
@@ -68,6 +69,12 @@ def buildParser() -> argparse.ArgumentParser:
     backfillParser.add_argument("--fandom", required=True, help="URL slug, e.g. Harry-Potter")
     backfillParser.add_argument("--name", help="display name; defaults to the slug with dashes replaced")
     backfillParser.add_argument("--max-pages", type=int, default=None)
+
+    backfillAllParser = subparsers.add_parser(
+        "backfill-all", help="walk every fandom archive, smallest first, embedding as it goes")
+    backfillAllParser.add_argument("--max-fandoms", type=int, default=None)
+    backfillAllParser.add_argument("--embed-every", type=int, default=25,
+                                   help="run an embedding pass after this many fandoms")
 
     refreshParser = subparsers.add_parser("refresh", help="re-crawl a fandom's recently-updated head")
     refreshParser.add_argument("--section", required=True)
@@ -138,6 +145,15 @@ def main(argv: list[str] | None = None) -> int:
                     maxPagesPerPair=arguments.max_pages_per_pair,
                 )
                 print(f"{pairsCrawled} pairs crawled, {rowsIngested} rows")
+
+            elif arguments.command == "backfill-all":
+                totals = backfillEverything(
+                    fetcher, store, arguments.dsn,
+                    maxFandoms=arguments.max_fandoms,
+                    embedEveryFandoms=arguments.embed_every,
+                )
+                print(f"{totals['fandomsCompleted']} fandoms, {totals['rowsIngested']} rows, "
+                      f"{totals['embedded']} embedded ({totals['stopped']})")
 
             elif arguments.command == "justin":
                 outcome = pollJustIn(fetcher, store)

@@ -59,13 +59,14 @@ ON CONFLICT (story_id) DO UPDATE SET
 """
 
 UPSERT_FANDOM_SQL = """
-INSERT INTO fandoms (name, section_slug, fandom_slug, category_id)
-VALUES (%(name)s, %(sectionSlug)s, %(fandomSlug)s, %(categoryId)s)
+INSERT INTO fandoms (name, section_slug, fandom_slug, category_id, story_count)
+VALUES (%(name)s, %(sectionSlug)s, %(fandomSlug)s, %(categoryId)s, %(storyCount)s)
 ON CONFLICT (name) DO UPDATE SET
     -- Never overwrite a known slug/id with the NULLs a bare listing row carries.
     section_slug = COALESCE(EXCLUDED.section_slug, fandoms.section_slug),
     fandom_slug  = COALESCE(EXCLUDED.fandom_slug,  fandoms.fandom_slug),
-    category_id  = COALESCE(EXCLUDED.category_id,  fandoms.category_id)
+    category_id  = COALESCE(EXCLUDED.category_id,  fandoms.category_id),
+    story_count  = COALESCE(EXCLUDED.story_count,  fandoms.story_count)
 RETURNING id
 """
 
@@ -76,6 +77,17 @@ class StoryStore:
 
     def close(self) -> None:
         self._connection.close()
+
+    def commit(self) -> None:
+        """Flush pending work.
+
+        `upsertFandom` deliberately does not commit -- it is called inside
+        `upsertStories`, whose transaction must stay atomic. That makes it a
+        footgun for any caller using it on its own: the connection is not
+        autocommit, so uncommitted rows are discarded on close. Callers that
+        only touch fandoms must call this.
+        """
+        self._connection.commit()
 
     def __enter__(self) -> "StoryStore":
         return self
@@ -90,6 +102,7 @@ class StoryStore:
                 "sectionSlug": fandom.sectionSlug,
                 "fandomSlug": fandom.fandomSlug,
                 "categoryId": fandom.categoryId,
+                "storyCount": fandom.storyCount,
             })
             return cursor.fetchone()["id"]
 
@@ -222,6 +235,40 @@ class StoryStore:
                 (limit,),
             )
             return cursor.fetchall()
+
+    def iterPendingFandoms(self, limit: Optional[int] = None) -> list[dict]:
+        """Crawlable fandoms not yet exhausted, smallest first.
+
+        Smallest-first because the corpus becomes useful long before it becomes
+        complete: roughly 12,000 of 13,117 fandoms finish in the first few days,
+        while Harry Potter alone is over two days of crawling on its own.
+        Unknown counts sort last rather than first, so an unmeasured fandom
+        cannot stall the head of the queue.
+        """
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT f.name, f.section_slug, f.fandom_slug, f.story_count
+                FROM fandoms f
+                LEFT JOIN crawl_state c
+                    ON c.surface_key = 'browse:' || f.section_slug || '/' || f.fandom_slug
+                WHERE f.section_slug IS NOT NULL
+                  AND f.fandom_slug IS NOT NULL
+                  AND c.is_exhausted IS NOT TRUE
+                ORDER BY f.story_count NULLS LAST, f.name
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return cursor.fetchall()
+
+    def countUnembedded(self) -> int:
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) AS pending FROM stories "
+                "WHERE summary_embedding IS NULL AND deleted_at IS NULL"
+            )
+            return cursor.fetchone()["pending"]
 
     def countCrossoverPairs(self) -> int:
         with self._connection.cursor() as cursor:

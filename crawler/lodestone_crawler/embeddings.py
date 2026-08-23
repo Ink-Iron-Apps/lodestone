@@ -119,7 +119,7 @@ def backfillEmbeddings(
 
             with connection.cursor() as cursor:
                 cursor.executemany(
-                    "UPDATE stories SET summary_embedding = %s::vector WHERE story_id = %s",
+                    "UPDATE stories SET summary_embedding = %s::halfvec WHERE story_id = %s",
                     [(toPgVector(vector), row[0]) for vector, row in zip(vectors, rows)],
                 )
             connection.commit()
@@ -133,18 +133,23 @@ def backfillEmbeddings(
     return embeddedCount
 
 
-def buildVectorIndex(connectionString: str) -> None:
-    """Build the HNSW index.
+def buildVectorIndex(connectionString: str, maintenanceWorkMemory: str = "2GB") -> None:
+    """Build the HNSW index over the binary-quantized column.
 
-    Deliberately not in schema.sql: building HNSW once over a populated table is
-    far cheaper than maintaining it while millions of rows are inserted, so this
-    runs after a backfill rather than before.
+    Indexing the bit column rather than the vector is what makes this possible
+    on modest hardware: 96 bytes per story instead of ~4KB, so the graph fits in
+    a couple of GB rather than the ~28GB a full-precision index would need.
+
+    Deliberately not in schema.sql -- one bulk build is far cheaper than
+    maintaining the graph across millions of inserts, so this runs after a
+    backfill rather than before.
     """
     with psycopg.connect(connectionString) as connection, connection.cursor() as cursor:
+        # Session-scoped, so it cannot leave the server permanently reconfigured.
+        cursor.execute(f"SET maintenance_work_mem = '{maintenanceWorkMemory}'")
         cursor.execute(
-            "CREATE INDEX IF NOT EXISTS stories_embedding_idx ON stories "
-            "USING hnsw (summary_embedding vector_cosine_ops) "
-            "WITH (m = 16, ef_construction = 64)"
+            "CREATE INDEX IF NOT EXISTS stories_embedding_bits_idx ON stories "
+            "USING hnsw (summary_embedding_bits bit_hamming_ops)"
         )
         connection.commit()
-    logger.info("HNSW index ready")
+    logger.info("HNSW index ready (binary-quantized, %s build memory)", maintenanceWorkMemory)

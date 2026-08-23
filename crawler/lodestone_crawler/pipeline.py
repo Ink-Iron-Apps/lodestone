@@ -16,6 +16,7 @@ import dataclasses
 import logging
 from typing import Optional
 
+from .embeddings import EmbeddingError, backfillEmbeddings
 from .fetcher import BlockedError, FanFictionFetcher, FetchError
 from .models import Fandom
 from .parser import (
@@ -25,14 +26,6 @@ from .parser import (
     parseListingPage,
 )
 from .storage import StoryStore
-# A listing page that comes back short is the last page: FFN fills pages
-# completely until it runs out. Detecting exhaustion this way, rather than by
-# fetching the next (empty) page, saves one request per archive. Across ~13K
-# fandoms and ~158K crossover pairs that is ~165K requests -- roughly a quarter
-# of a full backfill, or eleven days of wall clock at the robots.txt crawl
-# delay. See scripts/estimate_backfill.py.
-FANDOM_PAGE_SIZE = 25
-
 from .surfaces import (
     SECTION_SLUGS,
     BrowseSort,
@@ -45,6 +38,14 @@ from .surfaces import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A listing page that comes back short is the last page: FFN fills pages
+# completely until it runs out. Detecting exhaustion this way, rather than by
+# fetching the next (empty) page, saves one request per archive. Across ~13K
+# fandoms and ~158K crossover pairs that is ~165K requests -- roughly a quarter
+# of a full backfill, or eleven days of wall clock at the robots.txt crawl
+# delay. See scripts/estimate_backfill.py.
+FANDOM_PAGE_SIZE = 25
 
 
 @dataclasses.dataclass(slots=True)
@@ -199,6 +200,10 @@ def discoverFandoms(fetcher: FanFictionFetcher, store: StoryStore) -> int:
         for fandom in iterFandomDirectory(html, sectionSlug):
             store.upsertFandom(fandom)
             discoveredCount += 1
+        # Commit per section: upsertFandom does not commit on its own, and
+        # without this the whole discovery is rolled back when the connection
+        # closes -- silently, with the run still reporting success.
+        store.commit()
         logger.info("section %s -> %d fandoms cumulative", sectionSlug, discoveredCount)
     return discoveredCount
 
@@ -235,6 +240,7 @@ def discoverCrossoverPairs(
         for fandom in sectionFandoms:
             fandom.sectionSlug = sectionSlug
             store.upsertFandom(fandom)
+        store.commit()
         crossoverFandoms.extend(sectionFandoms)
         logger.info("crossover directory %s -> %d fandoms", sectionSlug, len(sectionFandoms))
 
@@ -368,3 +374,77 @@ def backfillCrossovers(
         logger.info("%s -> %d rows (%s)", outcome.surfaceKey,
                     outcome.rowsIngested, outcome.stoppedReason)
     return pairsCrawled, rowsIngested
+
+
+# ---------------------------------------------------------------------------
+# Whole-corpus backfill
+# ---------------------------------------------------------------------------
+
+
+def backfillEverything(
+    fetcher: FanFictionFetcher,
+    store: StoryStore,
+    connectionString: str,
+    maxFandoms: Optional[int] = None,
+    embedEveryFandoms: int = 25,
+    embedBatchSize: int = 64,
+) -> dict:
+    """Walk every fandom archive, smallest first, embedding as it goes.
+
+    Embedding is interleaved rather than run as a final pass for two reasons.
+    The crawl produces roughly four stories a second while the GPU embeds around
+    thirty, so interleaving keeps GPU duty near a tenth and leaves the card
+    free for whatever else the machine is doing. It also means the corpus is
+    fully searchable, semantically included, at every point during a crawl that
+    takes weeks -- rather than only at the end.
+
+    Resumable: every fandom's progress lives in crawl_state, so an interrupted
+    run continues where it stopped.
+    """
+    totals = {"fandomsCompleted": 0, "rowsIngested": 0, "embedded": 0, "stopped": ""}
+
+    while True:
+        pending = store.iterPendingFandoms(limit=embedEveryFandoms)
+        if not pending:
+            totals["stopped"] = "all fandoms exhausted"
+            break
+        if maxFandoms is not None and totals["fandomsCompleted"] >= maxFandoms:
+            totals["stopped"] = "fandom budget reached"
+            break
+
+        for row in pending:
+            if maxFandoms is not None and totals["fandomsCompleted"] >= maxFandoms:
+                break
+
+            fandom = Fandom(
+                name=row["name"],
+                sectionSlug=row["section_slug"],
+                fandomSlug=row["fandom_slug"],
+                storyCount=row["story_count"],
+            )
+            try:
+                outcome = backfillFandom(fetcher, store, fandom)
+            except BlockedError:
+                totals["stopped"] = "blocked"
+                raise
+            except FetchError as error:
+                # One bad fandom must not end a multi-week crawl. crawl_state
+                # keeps the error so it can be retried later.
+                logger.warning("fandom %s failed, skipping: %s", fandom.name, error)
+                continue
+
+            totals["fandomsCompleted"] += 1
+            totals["rowsIngested"] += outcome.rowsIngested
+            logger.info("[%d fandoms, %d rows] %s -> %d rows",
+                        totals["fandomsCompleted"], totals["rowsIngested"],
+                        fandom.name, outcome.rowsIngested)
+
+        try:
+            embedded = backfillEmbeddings(connectionString, batchSize=embedBatchSize)
+            totals["embedded"] += embedded
+        except EmbeddingError as error:
+            # Embeddings are an enhancement; losing the model server must not
+            # stop the crawl, and unembedded rows are picked up next pass.
+            logger.warning("embedding pass failed, continuing crawl: %s", error)
+
+    return totals
