@@ -1,0 +1,25 @@
+[Unit]
+Description=Lodestone search API
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riley
+WorkingDirectory=/mnt/s/coding/lodestone
+ExecStart=/mnt/s/coding/lodestone/scripts/dev.sh serve
+
+# Read-only service, so it can be restarted freely and never loses work.
+# Given a normal priority because it serves interactive queries -- unlike the
+# crawler, which yields to everything.
+Restart=always
+RestartSec=10
+MemoryMax=1G
+
+StandardOutput=append:/var/log/lodestone-api.log
+StandardError=append:/var/log/lodestone-api.log
+SyslogIdentifier=lodestone-api
+
+[Install]
+WantedBy=default.target
