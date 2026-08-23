@@ -1,0 +1,38 @@
+[Unit]
+Description=Lodestone FanFiction.Net backfill crawler
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riley
+WorkingDirectory=/mnt/s/coding/lodestone
+ExecStart=/mnt/s/coding/lodestone/scripts/dev.sh crawl backfill-all
+
+# The crawl runs for weeks on a machine that is also a media server. It must
+# never be the reason a transcode stutters, so it yields on every axis:
+# lowest useful CPU priority, idle I/O class, and a hard memory ceiling well
+# above its ~60MB working set but far below anything that could squeeze Plex.
+Nice=15
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+MemoryMax=1G
+MemoryHigh=512M
+
+# Resumable by design -- crawl_state records progress per archive -- so the
+# correct response to any crash, reboot or network outage is simply to start
+# again and continue where it stopped.
+Restart=always
+RestartSec=300
+
+# Exits cleanly once every fandom is exhausted; the restart then re-checks for
+# newly added fandoms rather than treating completion as failure.
+SuccessExitStatus=0
+
+StandardOutput=append:/var/log/lodestone-backfill.log
+StandardError=append:/var/log/lodestone-backfill.log
+SyslogIdentifier=lodestone-backfill
+
+[Install]
+WantedBy=default.target
