@@ -387,6 +387,7 @@ def backfillEverything(
     connectionString: str,
     maxFandoms: Optional[int] = None,
     embedEveryFandoms: int = 25,
+    embedEveryRows: int = 5000,
     embedBatchSize: int = 64,
 ) -> dict:
     """Walk every fandom archive, smallest first, embedding as it goes.
@@ -397,6 +398,12 @@ def backfillEverything(
     free for whatever else the machine is doing. It also means the corpus is
     fully searchable, semantically included, at every point during a crawl that
     takes weeks -- rather than only at the end.
+
+    Embedding triggers on rows as well as fandoms, whichever comes first. A
+    fandom count alone is the wrong clock: it was sized when fandoms held one
+    story each, but the tail of the queue holds hundreds of thousands, so 25
+    fandoms stretched from minutes to hours and would have kept growing. Rows
+    bound the lag no matter how big the archives get.
 
     Resumable: every fandom's progress lives in crawl_state, so an interrupted
     run continues where it stopped.
@@ -411,6 +418,8 @@ def backfillEverything(
         if maxFandoms is not None and totals["fandomsCompleted"] >= maxFandoms:
             totals["stopped"] = "fandom budget reached"
             break
+
+        rowsSinceEmbedding = 0
 
         for row in pending:
             if maxFandoms is not None and totals["fandomsCompleted"] >= maxFandoms:
@@ -435,16 +444,31 @@ def backfillEverything(
 
             totals["fandomsCompleted"] += 1
             totals["rowsIngested"] += outcome.rowsIngested
+            rowsSinceEmbedding += outcome.rowsIngested
             logger.info("[%d fandoms, %d rows] %s -> %d rows",
                         totals["fandomsCompleted"], totals["rowsIngested"],
                         fandom.name, outcome.rowsIngested)
 
-        try:
-            embedded = backfillEmbeddings(connectionString, batchSize=embedBatchSize)
-            totals["embedded"] += embedded
-        except EmbeddingError as error:
-            # Embeddings are an enhancement; losing the model server must not
-            # stop the crawl, and unembedded rows are picked up next pass.
-            logger.warning("embedding pass failed, continuing crawl: %s", error)
+            # A single large archive can outweigh many small ones, so check the
+            # row budget inside the loop rather than only between batches.
+            if rowsSinceEmbedding >= embedEveryRows:
+                totals["embedded"] += _runEmbeddingPass(connectionString, embedBatchSize)
+                rowsSinceEmbedding = 0
+
+        totals["embedded"] += _runEmbeddingPass(connectionString, embedBatchSize)
 
     return totals
+
+
+def _runEmbeddingPass(connectionString: str, batchSize: int) -> int:
+    """Embed pending rows, tolerating a missing model server.
+
+    Embeddings are an enhancement: losing the model server must not stop a crawl
+    that is otherwise healthy, and anything left unembedded is picked up by the
+    next pass.
+    """
+    try:
+        return backfillEmbeddings(connectionString, batchSize=batchSize)
+    except EmbeddingError as error:
+        logger.warning("embedding pass failed, continuing crawl: %s", error)
+        return 0
