@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 
-from .embeddings import backfillEmbeddings, buildVectorIndex
+from .embeddings import EmbeddingError, backfillEmbeddings, buildVectorIndex
 from .fetcher import BlockedError, FanFictionFetcher
 from .models import Fandom
 from .pipeline import (
@@ -115,8 +115,16 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.command == "embed":
         # Embedding talks to the local model server, never to FFN, so it does
         # not go through the fetcher or its crawl delay.
-        embeddedCount = backfillEmbeddings(
-            arguments.dsn, batchSize=arguments.batch_size, limit=arguments.limit)
+        #
+        # Runs as a polling worker under systemd, so a stalled model server must
+        # exit cleanly rather than raise: a traceback here turns a transient GPU
+        # stall into a restart loop that looks like a real failure.
+        try:
+            embeddedCount = backfillEmbeddings(
+                arguments.dsn, batchSize=arguments.batch_size, limit=arguments.limit)
+        except EmbeddingError as error:
+            print(f"embedding unavailable, will retry: {error}", file=sys.stderr)
+            return 0
         print(f"embedded {embeddedCount} stories")
         if arguments.build_index:
             buildVectorIndex(arguments.dsn)

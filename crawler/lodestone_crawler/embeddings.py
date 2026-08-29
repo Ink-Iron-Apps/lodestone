@@ -47,7 +47,14 @@ def buildEmbeddingText(title: str, summary: str) -> str:
     return f"{title}. {summary}".strip()[:MAX_INPUT_CHARACTERS]
 
 
-def embedBatch(texts: Sequence[str], timeoutSeconds: int = 120) -> list[list[float]]:
+# The model server shares a GPU with whatever else the machine is doing, so a
+# request can stall while the model is swapped back in. Measured: a single
+# embed took 3.8s on an idle card and 17s on a busy one, and a 64-item batch
+# exceeded a 120s ceiling entirely.
+EMBED_TIMEOUT_SECONDS = 600
+
+
+def embedBatch(texts: Sequence[str], timeoutSeconds: int = EMBED_TIMEOUT_SECONDS) -> list[list[float]]:
     """Embed a batch of strings via the local embedding server."""
     if not texts:
         return []
@@ -115,7 +122,15 @@ def backfillEmbeddings(
                 break
 
             texts = [buildEmbeddingText(title, summary) for _, title, summary in rows]
-            vectors = embedBatch(texts)
+            try:
+                vectors = embedBatch(texts)
+            except EmbeddingError as error:
+                # A stalled model server is transient and common on a shared
+                # GPU. Stop this pass cleanly and let the caller retry rather
+                # than losing the rows already embedded in this run.
+                logger.warning("batch failed after %d embedded, stopping pass: %s",
+                               embeddedCount, error)
+                return embeddedCount
 
             with connection.cursor() as cursor:
                 cursor.executemany(

@@ -1,0 +1,34 @@
+[Unit]
+Description=Lodestone summary embedding worker
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riley
+WorkingDirectory=/mnt/s/coding/lodestone
+ExecStart=/mnt/s/coding/lodestone/scripts/dev.sh crawl embed --batch-size 32
+
+# Embedding runs as its own worker rather than only inline in the crawl, so its
+# cadence does not depend on how large the fandom being crawled happens to be.
+# The crawler keeps its own inline pass as a backstop; both are idempotent,
+# since each only touches rows whose embedding is still NULL.
+#
+# The command exits once nothing is pending, so the restart is the poll loop.
+Restart=always
+RestartSec=60
+
+# Talks to the GPU model server, so it yields like the crawler does: the card is
+# shared with transcoding and must not be monopolised.
+Nice=15
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+MemoryMax=1G
+
+StandardOutput=append:/var/log/lodestone-embed.log
+StandardError=append:/var/log/lodestone-embed.log
+SyslogIdentifier=lodestone-embed
+
+[Install]
+WantedBy=default.target
