@@ -82,7 +82,7 @@ class FanFictionFetcher:
         impersonate: str = "chrome",
         crawlDelaySeconds: float = ROBOTS_CRAWL_DELAY_SECONDS,
         maxRetries: int = 4,
-        jitterSeconds: float = 1.0,
+        jitterSeconds: float = 0.2,
     ) -> None:
         if crawlDelaySeconds < ROBOTS_CRAWL_DELAY_SECONDS:
             raise ValueError(
@@ -105,7 +105,10 @@ class FanFictionFetcher:
         if self._lastRequestAt is None:
             return
         elapsed = time.monotonic() - self._lastRequestAt
-        # Jitter keeps a fleet of workers from marching in lockstep.
+        # Jitter keeps a fleet of workers from marching in lockstep. With a
+        # single worker it buys nothing and costs half of it per request, so it
+        # is small by default and only worth raising if this ever runs as a
+        # fleet.
         target = self.crawlDelaySeconds + random.uniform(0, self.jitterSeconds)
         if elapsed < target:
             waitSeconds = target - elapsed
