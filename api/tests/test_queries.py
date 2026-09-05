@@ -10,8 +10,10 @@ from __future__ import annotations
 import pytest
 
 from lodestone_api.queries import (
+    COUNT_CEILING,
     SearchFilters,
     SortOrder,
+    buildCountQuery,
     buildSearchQuery,
     buildWhereClause,
 )
@@ -238,3 +240,46 @@ def testRelevanceSortPrefersSemanticWhenAVectorIsPresent():
     )
     assert "<=>" in sql
     assert "ts_rank" not in sql
+
+
+# --------------------------------------------------------------------------
+# Scale
+# --------------------------------------------------------------------------
+
+def testSearchDoesNotCountInline():
+    """A window count over the result set forces a scan of every match and
+    stops the planner using the ORDER BY index. At 3.5M rows that took an
+    unfiltered search from milliseconds to over a minute."""
+    sql, _ = buildSearchQuery(SearchFilters())
+    assert "COUNT(*) OVER" not in sql
+    assert "total_count" not in sql
+
+
+def testCountIsCapped():
+    """Counting exactly means visiting every match. The inner LIMIT lets
+    Postgres stop early, so a broad query costs the ceiling, not the corpus."""
+    sql, parameters = buildCountQuery(SearchFilters())
+    assert "LIMIT %(countCeiling)s" in sql
+    assert parameters["countCeiling"] == COUNT_CEILING
+
+
+def testCountAppliesTheSameFilters():
+    """The count and the page must agree, or the header contradicts the list."""
+    _, searchParameters = buildSearchQuery(
+        SearchFilters(excludedGenres=["Romance"], status="complete"))
+    countSql, countParameters = buildCountQuery(
+        SearchFilters(excludedGenres=["Romance"], status="complete"))
+    assert "NOT (s.genres && %(excludedGenres)s)" in countSql
+    assert countParameters["excludedGenres"] == searchParameters["excludedGenres"]
+    assert countParameters["status"] == searchParameters["status"]
+
+
+def testSortsRequestNullsLastConsistently():
+    """Every DESC sort must say NULLS LAST, and the indexes must be declared the
+    same way -- a plain DESC index is NULLS FIRST, a different ordering the
+    planner will refuse to use. See db/migrations/007_sortable_indexes.sql."""
+    for sort in (SortOrder.UPDATED, SortOrder.PUBLISHED, SortOrder.WORDS,
+                 SortOrder.FAVORITES_PER_1K):
+        sql, _ = buildSearchQuery(SearchFilters(sort=sort))
+        orderBy = sql[sql.rindex("ORDER BY"):]
+        assert "NULLS LAST" in orderBy, f"{sort} lost its NULLS LAST"

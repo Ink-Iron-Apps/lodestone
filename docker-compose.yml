@@ -18,6 +18,9 @@ services:
     # 29s. That bimodal shape is checkpoint and GIN-flush stalls, not steady
     # cost -- 160MB of shared_buffers against an 11GB table, and a 1GB WAL
     # ceiling forcing a 300-400MB checkpoint every five minutes.
+    # Docker defaults /dev/shm to 64MB, which parallel query workers exhaust on
+    # a corpus this size ("could not resize shared memory segment").
+    shm_size: 1gb
     command: >
       postgres
       -c shared_buffers=2GB

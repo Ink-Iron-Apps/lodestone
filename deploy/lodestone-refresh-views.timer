@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Lodestone stats and facets periodically
+
+[Timer]
+# These label filters and head-line counts; minutes of lag is invisible, and
+# rebuilding them aggregates the whole corpus, so keep it infrequent.
+OnBootSec=15min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
