@@ -1,0 +1,12 @@
+[Unit]
+Description=Lodestone refresh precomputed stats and facet views
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+
+[Service]
+Type=oneshot
+User=riley
+WorkingDirectory=/mnt/s/coding/lodestone
+# CONCURRENTLY so the sidebar stays readable while the views rebuild.
+ExecStart=/usr/bin/docker exec lodestone-postgres-1 psql -U lodestone -d lodestone     -c "REFRESH MATERIALIZED VIEW corpus_stats"     -c "REFRESH MATERIALIZED VIEW CONCURRENTLY facet_counts"
+Nice=15
+IOSchedulingClass=idle

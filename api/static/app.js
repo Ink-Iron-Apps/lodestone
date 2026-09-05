@@ -328,7 +328,10 @@ async function runSearch(resetPage = false) {
     for (const story of payload.results) elements.storyList.appendChild(renderStory(story));
   }
 
-  elements.resultCount.innerHTML = `<strong>${formatNumber(payload.total)}</strong> stories`;
+  const totalLabel = payload.totalIsCapped
+    ? `${formatNumber(payload.total)}+`
+    : formatNumber(payload.total);
+  elements.resultCount.innerHTML = `<strong>${totalLabel}</strong> stories`;
   if (state.isSemantic && state.query && !payload.semantic) {
     // The API degrades to keyword search when the embedding server is down.
     // Say so rather than passing off keyword results as semantic ones.
@@ -341,9 +344,11 @@ async function runSearch(resetPage = false) {
 
   const lastPage = Math.max(1, Math.ceil(payload.total / PAGE_SIZE));
   elements.pager.hidden = payload.total <= PAGE_SIZE;
-  elements.pageLabel.textContent = `Page ${state.page} of ${formatNumber(lastPage)}`;
+  elements.pageLabel.textContent = payload.totalIsCapped
+    ? `Page ${state.page}`
+    : `Page ${state.page} of ${formatNumber(lastPage)}`;
   elements.prevPage.disabled = state.page <= 1;
-  elements.nextPage.disabled = state.page >= lastPage;
+  elements.nextPage.disabled = !payload.totalIsCapped && state.page >= lastPage;
 }
 
 async function loadFacets() {

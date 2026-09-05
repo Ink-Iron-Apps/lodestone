@@ -26,10 +26,12 @@ from psycopg.rows import dict_row
 
 from .embedding import EmbeddingUnavailable, embedQuery, toPgVector
 from .queries import (
+    COUNT_CEILING,
     FACET_QUERIES,
     STATS_QUERY,
     SearchFilters,
     SortOrder,
+    buildCountQuery,
     buildSearchQuery,
 )
 
@@ -123,17 +125,19 @@ def search(filters: Annotated[SearchFilters, Depends(parseFilters)]) -> dict:
     sql, parameters = buildSearchQuery(filters)
     rows = runQuery(sql, parameters)
 
-    # COUNT(*) OVER () rides along on every row, so the total costs no extra
-    # round trip -- but it is absent when the result set is empty.
-    totalCount = rows[0]["total_count"] if rows else 0
+    # Counted separately and capped. Riding a window count along with the page
+    # looked free but forced a full scan of every match; see COUNT_CEILING.
+    countSql, countParameters = buildCountQuery(filters)
+    totalCount = runQuery(countSql, countParameters)[0]["matched"]
+
     for row in rows:
-        row.pop("total_count", None)
         # Every result links back to fanfiction.net. Lodestone indexes; it does
         # not host.
         row["url"] = f"https://www.fanfiction.net/s/{row['story_id']}/1/"
 
     return {
         "total": totalCount,
+        "totalIsCapped": totalCount >= COUNT_CEILING,
         "page": filters.page,
         "pageSize": filters.pageSize,
         # Makes a degraded semantic search visible to the caller instead of
@@ -146,7 +150,7 @@ def search(filters: Annotated[SearchFilters, Depends(parseFilters)]) -> dict:
 @app.get("/api/facets")
 def facets() -> dict:
     """Filter vocabulary with corpus-wide counts."""
-    return {name: runQuery(sql) for name, sql in FACET_QUERIES.items()}
+    return {name: runQuery(sql, {"facet": name}) for name, sql in FACET_QUERIES.items()}
 
 
 @app.get("/api/stats")
