@@ -40,7 +40,7 @@ def probeSurfaces(impersonationTarget):
     for surfaceName, url in PROBE_URLS.items():
         try:
             response = session.get(url, timeout=30)
-            rowCount = response.text.count('class="z-list')
+            rowCount = response.text.count("class='z-list")  # FFN quotes attributes with '', not ""
             print(f"  {surfaceName:15} -> {response.status_code}  rows={rowCount}")
         except Exception as error:
             print(f"  {surfaceName:15} -> ERR {type(error).__name__}: {str(error)[:70]}")
@@ -61,7 +61,7 @@ def probeSustainedRate(impersonationTarget, requestCount=12, delaySeconds=5):
             response = session.get(url, timeout=30)
             elapsedSeconds = time.time() - startedAt
             latencies.append(elapsedSeconds)
-            rowCount = response.text.count('class="z-list')
+            rowCount = response.text.count("class='z-list")  # FFN quotes attributes with '', not ""
             statusCounts[response.status_code] = statusCounts.get(response.status_code, 0) + 1
             print(f"  p={pageNumber:<4} {response.status_code}  rows={rowCount:<3} {elapsedSeconds:.2f}s")
         except Exception as error:
