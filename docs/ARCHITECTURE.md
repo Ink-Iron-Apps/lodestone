@@ -46,7 +46,12 @@ Story page differs: `Rated: Fiction T`, chars **before** Chapters, `Status: Comp
 Cloudflare blocks on **TLS fingerprint**, not UA. Plain curl + Chrome UA = 403. `curl_cffi impersonate='chrome'` = 200.
 → no browser engine needed.
 
-**Datacenter ASN blocked separately** → crawler MUST egress residential. Compose uses `network_mode: host`. Query layer unconstrained.
+~~**Datacenter ASN blocked separately** → crawler MUST egress residential.~~ **FALSE — never tested, inferred from another site. Disproven 2026-09-07.**
+From datacenter host: curl_cffi impersonate → **8/8 200** all surfaces incl. p=3000 + story page, ~0.24s mean. Plain curl + Chrome UA same host → 403. **Gate = fingerprint, not IP.** → crawler runs anywhere. No `network_mode: host`.
+
+**Real browser is WORSE.** Headless Chromium over CDP, same host → **403 challenge**: `--headless=new` still ships `HeadlessChrome` UA + automation tells. If FFN ever adds a JS challenge → Camoufox/Patchright, never stock headless Chromium.
+
+Keep `impersonate="chrome"` — rolling alias. Never pin `chromeNNN`, goes stale.
 
 No `charset` header → clients guess latin-1 → mojibake (`Pokémon`). Payload always UTF-8. Always `.content.decode("utf-8")`.
 
