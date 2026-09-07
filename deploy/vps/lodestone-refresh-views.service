@@ -1,0 +1,18 @@
+[Unit]
+Description=Lodestone refresh precomputed stats and facet views
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=riley
+WorkingDirectory=/home/riley/coding/lodestone
+# Native psql against the local cluster. CONCURRENTLY so the sidebar stays
+# readable while the views rebuild. Credentials come from riley's ~/.pgpass
+# rather than an Environment= line, because unit files in /etc are world
+# readable and the corpus password would otherwise be in one.
+ExecStart=/usr/bin/psql -q -U lodestone -d lodestone -h 127.0.0.1 -p 5432 -c "REFRESH MATERIALIZED VIEW corpus_stats" -c "REFRESH MATERIALIZED VIEW CONCURRENTLY facet_counts"
+Nice=15
+IOSchedulingClass=idle
+SyslogIdentifier=lodestone-refresh-views

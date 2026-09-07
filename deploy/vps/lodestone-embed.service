@@ -1,0 +1,36 @@
+[Unit]
+Description=Lodestone summary embedding worker
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+After=network-online.target postgresql.service ollama.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=riley
+WorkingDirectory=/home/riley/coding/lodestone
+ExecStart=/home/riley/coding/lodestone/scripts/dev.sh crawl embed --batch-size 32
+
+# Embedding runs as its own worker rather than only inline in the crawl, so its
+# cadence does not depend on how large the fandom being crawled happens to be.
+# The crawler keeps its own inline pass as a backstop; both are idempotent,
+# since each only touches rows whose embedding is still NULL.
+#
+# The command exits once nothing is pending, so the restart is the poll loop.
+Restart=always
+RestartSec=60
+
+# The model server here is CPU-only rather than the desktop's GPU. That is fine
+# for the steady state -- only newly crawled summaries need embedding -- but it
+# is the reason this yields rather than competing with the API for cores.
+Nice=15
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+MemoryMax=1G
+
+StandardOutput=append:/var/log/lodestone-embed.log
+StandardError=append:/var/log/lodestone-embed.log
+SyslogIdentifier=lodestone-embed
+
+[Install]
+WantedBy=multi-user.target
