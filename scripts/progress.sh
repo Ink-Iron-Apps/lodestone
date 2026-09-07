@@ -16,7 +16,15 @@ restarts=$(systemctl show lodestone-backfill -p NRestarts --value 2>/dev/null ||
 problems=$(tail -500 /var/log/lodestone-backfill.log 2>/dev/null     | grep -ciE 'BLOCKED:|BlockedError|stopped trusting this egress' | head -1)
 problems=${problems:-0}
 
-stats=$(docker exec lodestone-postgres-1 psql -U lodestone -d lodestone -Atc "
+# Native psql where the cluster is not containerised; the docker form is kept
+# as the fallback so the compose deployment is unaffected.
+if command -v psql >/dev/null 2>&1; then
+    psqlCommand=(psql -U lodestone -d lodestone -h 127.0.0.1 -p "${POSTGRES_PORT:-5432}")
+else
+    psqlCommand=(docker exec lodestone-postgres-1 psql -U lodestone -d lodestone)
+fi
+
+stats=$("${psqlCommand[@]}" -Atc "
 SELECT (SELECT count(*) FROM stories WHERE deleted_at IS NULL)
     || ' stories, ' || (SELECT count(*) FROM stories WHERE summary_embedding IS NOT NULL)
     || ' embedded, ' || (SELECT count(*) FROM crawl_state WHERE surface_key LIKE 'browse:%' AND is_exhausted)
