@@ -39,13 +39,19 @@ from .surfaces import (
 
 logger = logging.getLogger(__name__)
 
-# A listing page that comes back short is the last page: FFN fills pages
-# completely until it runs out. Detecting exhaustion this way, rather than by
-# fetching the next (empty) page, saves one request per archive. Across ~13K
-# fandoms and ~158K crossover pairs that is ~165K requests -- roughly a quarter
-# of a full backfill, or eleven days of wall clock at the robots.txt crawl
-# delay. See scripts/estimate_backfill.py.
-FANDOM_PAGE_SIZE = 25
+# Exhaustion is an empty page, and only an empty page.
+#
+# This used to stop on the first short page instead, on the premise that FFN
+# fills a listing completely until it runs out, which saved one request per
+# archive -- ~165K requests across ~13K fandoms and ~158K crossover pairs,
+# roughly a quarter of a full backfill. The premise is false. A story deleted
+# since the page was composed leaves a gap, so FFN serves 24 rows in the middle
+# of an archive and keeps going. Measured on 2026-10-17: Harry Potter page 165
+# returned 24 rows, pages 166 and 167 a full 25 each, all older stories.
+#
+# The cost of that shortcut was 64 fandoms marked complete early and 2.5M
+# stories never indexed, Harry Potter among them at 4,124 of 805,268. Confirming
+# the end of an archive is worth the extra request; do not reinstate it.
 
 
 @dataclasses.dataclass(slots=True)
@@ -121,14 +127,13 @@ def backfillFandom(
 
         outcome.rowsIngested += store.upsertStories(records)
 
-        if len(records) < FANDOM_PAGE_SIZE:
-            outcome.isExhausted = True
-            outcome.stoppedReason = "short page"
-            store.recordCrawlProgress(surfaceKey, pageNumber, len(records), isExhausted=True)
-            logger.info("%s p=%d -> %d rows (%d total, exhausted)", surfaceKey,
-                        pageNumber, len(records), outcome.rowsIngested)
-            return outcome
-
+        # A short page is NOT the end of the archive. FFN pads a listing to 25
+        # rows from what currently exists, so a story deleted since the page was
+        # last composed leaves a gap and the page comes back with 24. Treating
+        # that as exhaustion stopped 64 fandoms early and lost 2.5M stories --
+        # Harry Potter indexed 4,124 of 805,268 because page 165 returned 24
+        # rows while 166 and 167 both returned a full 25 of older stories.
+        # The empty page above is the only terminal signal.
         store.recordCrawlProgress(surfaceKey, pageNumber, len(records))
         logger.info("%s p=%d -> %d rows (%d total)", surfaceKey, pageNumber,
                     len(records), outcome.rowsIngested)
@@ -338,14 +343,10 @@ def backfillCrossoverPair(
 
         outcome.rowsIngested += store.upsertStories(records)
 
-        if len(records) < FANDOM_PAGE_SIZE:
-            # Most crossover archives hold a handful of stories, so this is the
-            # common case rather than an edge case.
-            outcome.isExhausted = True
-            outcome.stoppedReason = "short page"
-            store.recordCrawlProgress(surfaceKey, pageNumber, len(records), isExhausted=True)
-            return outcome
-
+        # Short pages are not terminal here either, for the same reason as the
+        # fandom walk above: a deleted story leaves a 24-row page mid-archive.
+        # Most crossover archives do hold only a handful of stories, but they
+        # prove it by serving an empty page next, which costs one extra request.
         store.recordCrawlProgress(surfaceKey, pageNumber, len(records))
         pageNumber += 1
 
