@@ -2,7 +2,12 @@
 # One-line backfill status, safe to call from a monitor or by hand.
 set -uo pipefail
 
-status=$(systemctl is-active lodestone-backfill 2>/dev/null || echo unknown)
+# `is-active` prints the state and exits non-zero for every state but "active",
+# so a `|| echo unknown` fallback appends a second line rather than replacing
+# anything, and the status reads "activating\nunknown". Take the first line and
+# fall back only when there is no output at all.
+status=$(systemctl is-active lodestone-backfill 2>/dev/null | head -1)
+status=${status:-unknown}
 restarts=$(systemctl show lodestone-backfill -p NRestarts --value 2>/dev/null || echo '?')
 # Only look at recent history. Counting over the whole log means one transient
 # failure -- a Postgres crash-recovery reconnect, say -- flags PROBLEM forever

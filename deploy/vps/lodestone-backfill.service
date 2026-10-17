@@ -23,7 +23,7 @@ MemoryHigh=512M
 # Resumable by design -- crawl_state records progress per archive -- so the
 # correct response to any crash, reboot or network outage is simply to start
 # again and continue where it stopped.
-Restart=always
+Restart=on-failure
 RestartSec=300
 
 # Exits cleanly once every fandom is exhausted; the restart then re-checks for
