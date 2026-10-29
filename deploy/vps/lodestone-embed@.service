@@ -1,0 +1,46 @@
+[Unit]
+Description=Lodestone summary embedding worker %i
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+After=network-online.target postgresql.service ollama.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=riley
+WorkingDirectory=/home/riley/coding/lodestone
+ExecStart=/home/riley/coding/lodestone/scripts/dev.sh crawl embed --batch-size 32
+
+# Templated so several workers can run at once: `systemctl enable --now
+# lodestone-embed@1 lodestone-embed@2`. The instance name is only an identity --
+# every worker runs the identical command and claims its own rows with
+# FOR UPDATE SKIP LOCKED, so nothing has to be told how many siblings exist or
+# which slice is its own. Stopping one returns its rows to the pool.
+#
+# Two is the measured sweet spot rather than a guess: on 2026-10-28 Ollama
+# served four concurrent batches 2.49x faster than the same four in sequence,
+# so the parallelism is real, but it is one CPU-only model server and the API
+# shares the box.
+#
+# Embedding is now this worker's job alone. backfill-all used to also embed
+# inline; that pass drained the whole pending queue rather than a slice, so a
+# 164,725-row backlog stopped the crawl for 28 hours on 2026-10-27.
+#
+# The command exits once nothing is pending, so the restart is the poll loop.
+Restart=always
+RestartSec=60
+
+# The model server here is CPU-only rather than the desktop's GPU. That is fine
+# for the steady state -- only newly crawled summaries need embedding -- but it
+# is the reason this yields rather than competing with the API for cores.
+Nice=15
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+MemoryMax=1G
+
+StandardOutput=append:/var/log/lodestone-embed-%i.log
+StandardError=append:/var/log/lodestone-embed-%i.log
+SyslogIdentifier=lodestone-embed-%i
+
+[Install]
+WantedBy=multi-user.target

@@ -17,7 +17,11 @@ if [[ ! -f .env ]]; then
 fi
 set -a; source .env; set +a
 
-export LODESTONE_DSN="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:5433/${POSTGRES_DB}"
+# Host and port are overridable because the corpus is not always reached the
+# same way: the compose stack publishes Postgres on 127.0.0.1:5433, while a
+# host running it natively uses the stock 5432. Defaults keep the compose
+# workflow unchanged.
+export LODESTONE_DSN="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-localhost}:${POSTGRES_PORT:-5433}/${POSTGRES_DB}"
 pythonBin="$projectRoot/.venv/bin/python"
 
 case "${1:-serve}" in
@@ -34,6 +38,14 @@ case "${1:-serve}" in
             --host 127.0.0.1 --port "${LODESTONE_PORT:-8099}" "${reloadFlag[@]}"
         ;;
     psql)
+        # Native install first: where Postgres is not in a container there is
+        # no lodestone-postgres-1 to exec into, and the docker form then fails
+        # in a way that reads like the database is down rather than absent.
+        if command -v psql >/dev/null 2>&1; then
+            exec env PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                -h "${POSTGRES_HOST:-localhost}" -p "${POSTGRES_PORT:-5433}" \
+                -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+        fi
         exec docker exec -it lodestone-postgres-1 \
             psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
         ;;

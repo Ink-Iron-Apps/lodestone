@@ -52,7 +52,7 @@ the 14.6 million a story-by-story crawl would need.
 
 ```
                       ┌──────────────────────────┐
-  fanfiction.net ───► │  crawler (residential)   │
+  fanfiction.net ───► │  crawler (any host)      │
                       │  curl_cffi, 5s delay     │
                       └────────────┬─────────────┘
                                    │ StoryRecord
@@ -138,14 +138,32 @@ batch CPU scheduling, idle I/O, and a 1 GB ceiling against a ~40 MB working set 
 because it is expected to share a box with whatever else is running. It resumes
 from `crawl_state` after any interruption, so restarting it is always safe.
 
-### The crawler must run from a residential connection
+### What the crawler needs is a browser fingerprint, not a particular IP
 
 FFN sits behind Cloudflare, which blocks on the TLS fingerprint rather than the
 User-Agent — a stock HTTP client gets a flat 403 no matter what headers it
 sends. `curl_cffi` replays a real browser fingerprint, which is enough, and no
-browser engine is required. Datacenter IP ranges are blocked separately, so the
-crawler will not work from a VPS however polite it is. The query layer has no
-such constraint and can be hosted anywhere.
+browser engine is required.
+
+Earlier versions of this document also claimed that datacenter IP ranges were
+blocked separately and that the crawler therefore could not run on a VPS. That
+was never measured; it was inferred from a different site's behaviour. Measured
+on 2026-09-07 from a datacenter host, `curl_cffi` with `impersonate="chrome"`
+returned 200 on 8 of 8 requests across every crawl surface, including deep
+pagination and story pages, while plain `curl` with a Chrome User-Agent from the
+same host got the usual 403 challenge. The gate is the fingerprint. The crawler
+runs anywhere the fingerprint is right.
+
+Counter-intuitively, a real browser is the wrong tool here. Headless Chromium
+driven over CDP from the same host was served a 403 challenge, because
+`--headless=new` still advertises `HeadlessChrome` in its User-Agent alongside
+the usual automation tells. Should FFN ever add a JavaScript challenge, the
+answer is a stealth browser such as Camoufox or Patchright, not stock headless
+Chromium.
+
+Keep `impersonate="chrome"`. It is a rolling alias onto the newest profile
+`curl_cffi` ships; pinning a numbered target such as `chrome146` goes stale as
+Chrome moves on.
 
 ## Tests
 

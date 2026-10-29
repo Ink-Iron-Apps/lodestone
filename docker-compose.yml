@@ -65,8 +65,8 @@ services:
         condition: service_healthy
     environment:
       LODESTONE_DSN: postgresql://${POSTGRES_USER:-lodestone}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lodestone}
-    # Read-only service: it issues no writes and needs no residential egress, so
-    # unlike the crawler this is the piece that can be exposed publicly.
+    # Read-only service: it issues no writes, so unlike the crawler this is the
+    # piece that can be exposed publicly.
     ports:
       - "127.0.0.1:8099:8000"
     healthcheck:
@@ -83,11 +83,12 @@ services:
         condition: service_healthy
     environment:
       LODESTONE_DSN: postgresql://${POSTGRES_USER:-lodestone}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lodestone}
-    # The crawler must egress from a residential IP. Cloudflare blocks
-    # datacenter ASNs outright, so running this container on a VPS will get a
-    # flat 403 no matter how polite it is. Host networking keeps it on the
-    # machine's own connection.
-    network_mode: host
+    # Egress IP is not a constraint: FFN gates on the TLS fingerprint, which
+    # curl_cffi supplies, and a datacenter host measured 8/8 200s across every
+    # crawl surface. This previously ran with `network_mode: host` on the theory
+    # that a residential connection was required -- which also silently broke
+    # the DSN below, since host networking leaves the `postgres` service name
+    # unresolvable. Default bridge networking is both correct and sufficient.
     command: ["python", "-m", "lodestone_crawler", "justin"]
 
 volumes:

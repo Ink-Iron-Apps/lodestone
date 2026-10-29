@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: lodestone-crawler
+Version: 0.1.0
+Summary: Politeness-first crawler that turns FanFiction.Net listing pages into structured story metadata
+Requires-Python: >=3.12
+Requires-Dist: curl_cffi>=0.7
+Requires-Dist: psycopg[binary]>=3.2
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"

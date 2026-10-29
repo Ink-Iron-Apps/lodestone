@@ -71,10 +71,13 @@ def buildParser() -> argparse.ArgumentParser:
     backfillParser.add_argument("--max-pages", type=int, default=None)
 
     backfillAllParser = subparsers.add_parser(
-        "backfill-all", help="walk every fandom archive, smallest first, embedding as it goes")
+        "backfill-all", help="walk every fandom archive, smallest first")
     backfillAllParser.add_argument("--max-fandoms", type=int, default=None)
-    backfillAllParser.add_argument("--embed-every", type=int, default=25,
-                                   help="run an embedding pass after this many fandoms")
+    # Was --embed-every, when this command embedded inline. Embedding moved to
+    # the `embed` workers, so the only thing this still sets is how many pending
+    # fandoms are claimed from the queue per round trip.
+    backfillAllParser.add_argument("--fandom-batch-size", type=int, default=25,
+                                   help="how many pending fandoms to fetch per queue read")
 
     refreshParser = subparsers.add_parser("refresh", help="re-crawl a fandom's recently-updated head")
     refreshParser.add_argument("--section", required=True)
@@ -156,12 +159,12 @@ def main(argv: list[str] | None = None) -> int:
 
             elif arguments.command == "backfill-all":
                 totals = backfillEverything(
-                    fetcher, store, arguments.dsn,
+                    fetcher, store,
                     maxFandoms=arguments.max_fandoms,
-                    embedEveryFandoms=arguments.embed_every,
+                    fandomBatchSize=arguments.fandom_batch_size,
                 )
-                print(f"{totals['fandomsCompleted']} fandoms, {totals['rowsIngested']} rows, "
-                      f"{totals['embedded']} embedded ({totals['stopped']})")
+                print(f"{totals['fandomsCompleted']} fandoms, {totals['rowsIngested']} rows "
+                      f"({totals['stopped']})")
 
             elif arguments.command == "justin":
                 outcome = pollJustIn(fetcher, store)
