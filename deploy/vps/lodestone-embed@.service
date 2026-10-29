@@ -11,16 +11,28 @@ User=riley
 WorkingDirectory=/home/riley/coding/lodestone
 ExecStart=/home/riley/coding/lodestone/scripts/dev.sh crawl embed --batch-size 32
 
-# Templated so several workers can run at once: `systemctl enable --now
-# lodestone-embed@1 lodestone-embed@2`. The instance name is only an identity --
-# every worker runs the identical command and claims its own rows with
-# FOR UPDATE SKIP LOCKED, so nothing has to be told how many siblings exist or
-# which slice is its own. Stopping one returns its rows to the pool.
+# RUN ONE INSTANCE: `systemctl enable --now lodestone-embed@1`.
 #
-# Two is the measured sweet spot rather than a guess: on 2026-10-28 Ollama
-# served four concurrent batches 2.49x faster than the same four in sequence,
-# so the parallelism is real, but it is one CPU-only model server and the API
-# shares the box.
+# Templated because the workers can safely run concurrently -- each claims its
+# own rows with FOR UPDATE SKIP LOCKED, so nothing has to be told how many
+# siblings exist, and stopping one returns its rows to the pool. Safe to run
+# several is not the same as worth running several, and here it is not.
+#
+# A second worker makes throughput WORSE. Measured 2026-10-28 back to back on an
+# otherwise idle box, 12 minutes each:
+#
+#     1 worker   1152 rows / 754s = 5500/hour
+#     2 workers   736 rows / 737s = 3595/hour
+#
+# One worker is 1.53x the pair. llama-server splitting 8 shared cores across two
+# inference streams costs more than the concurrency returns.
+#
+# An earlier note here claimed two was the measured sweet spot, citing Ollama
+# serving four concurrent batches 2.49x faster than four in sequence. That
+# measurement was taken while Crucible held seven connections to the same model
+# server, so it measured how much of a contended server a second caller can
+# win -- not whether the server does more total work. It does not. Scale this
+# past one only against a fresh A/B on an idle box.
 #
 # Embedding is now this worker's job alone. backfill-all used to also embed
 # inline; that pass drained the whole pending queue rather than a slice, so a
