@@ -9,10 +9,17 @@ Type=oneshot
 User=riley
 WorkingDirectory=/home/riley/coding/lodestone
 # Native psql against the local cluster. CONCURRENTLY so the sidebar stays
-# readable while the views rebuild. Credentials come from riley's ~/.pgpass
-# rather than an Environment= line, because unit files in /etc are world
-# readable and the corpus password would otherwise be in one.
-ExecStart=/usr/bin/psql -q -U lodestone -d lodestone -h 127.0.0.1 -p 5432 -c "REFRESH MATERIALIZED VIEW corpus_stats" -c "REFRESH MATERIALIZED VIEW CONCURRENTLY facet_counts"
+# readable while the views rebuild -- /api/stats and /api/facets read these, and
+# a plain REFRESH takes an AccessExclusiveLock that blocks SELECT, not just
+# other refreshes. corpus_stats only became eligible in migration 008: 006 added
+# the unique index CONCURRENTLY requires for facet_counts and missed this one,
+# so until then the comment above was true of half the command. Measured at 7.3M
+# rows: 1m43s blocking, against a timer that fires every 30 minutes.
+#
+# Credentials come from riley's ~/.pgpass rather than an Environment= line,
+# because unit files in /etc are world readable and the corpus password would
+# otherwise be in one.
+ExecStart=/usr/bin/psql -q -U lodestone -d lodestone -h 127.0.0.1 -p 5432 -c "REFRESH MATERIALIZED VIEW CONCURRENTLY corpus_stats" -c "REFRESH MATERIALIZED VIEW CONCURRENTLY facet_counts"
 Nice=15
 IOSchedulingClass=idle
 SyslogIdentifier=lodestone-refresh-views

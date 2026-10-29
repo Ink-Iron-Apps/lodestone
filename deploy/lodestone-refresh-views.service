@@ -7,6 +7,6 @@ Type=oneshot
 User=riley
 WorkingDirectory=/mnt/s/coding/lodestone
 # CONCURRENTLY so the sidebar stays readable while the views rebuild.
-ExecStart=/usr/bin/docker exec lodestone-postgres-1 psql -U lodestone -d lodestone     -c "REFRESH MATERIALIZED VIEW corpus_stats"     -c "REFRESH MATERIALIZED VIEW CONCURRENTLY facet_counts"
+ExecStart=/usr/bin/docker exec lodestone-postgres-1 psql -U lodestone -d lodestone     -c "REFRESH MATERIALIZED VIEW CONCURRENTLY corpus_stats"     -c "REFRESH MATERIALIZED VIEW CONCURRENTLY facet_counts"
 Nice=15
 IOSchedulingClass=idle

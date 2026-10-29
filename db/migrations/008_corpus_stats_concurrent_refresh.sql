@@ -1,0 +1,21 @@
+-- Let corpus_stats refresh CONCURRENTLY, like facet_counts already can.
+--
+-- 006 added `facet_counts_key` for exactly this reason and stopped there, so
+-- corpus_stats kept refreshing with a plain REFRESH -- which takes an
+-- AccessExclusiveLock and therefore blocks every SELECT on the view, not just
+-- other refreshes. /api/stats reads this view, so the sidebar hangs for the
+-- duration.
+--
+-- That was invisible while it was cheap. Measured on 2026-10-28 against the
+-- 7.3M-row corpus it takes 1m43s, and the refresh timer fires every 30 minutes,
+-- so the view is unreadable for about 6% of the time and climbing -- the view
+-- aggregates the whole table, including a count(DISTINCT author_id). The
+-- desktop copy showed where that ends: an IO-starved host held one of these
+-- refreshes open for 45 hours, and corpus_stats could not be read for any of it.
+--
+-- CONCURRENTLY needs a unique index built only from column names, covering
+-- every row. The view is a single row of aggregates, so any column qualifies;
+-- computed_at is the honest choice because a refresh is exactly what makes it
+-- new.
+CREATE UNIQUE INDEX IF NOT EXISTS corpus_stats_computed_at
+    ON corpus_stats (computed_at);
