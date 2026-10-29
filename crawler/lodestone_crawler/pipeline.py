@@ -16,7 +16,6 @@ import dataclasses
 import logging
 from typing import Optional
 
-from .embeddings import EmbeddingError, backfillEmbeddings
 from .fetcher import BlockedError, FanFictionFetcher, FetchError
 from .models import Fandom
 from .parser import (
@@ -385,42 +384,37 @@ def backfillCrossovers(
 def backfillEverything(
     fetcher: FanFictionFetcher,
     store: StoryStore,
-    connectionString: str,
     maxFandoms: Optional[int] = None,
-    embedEveryFandoms: int = 25,
-    embedEveryRows: int = 5000,
-    embedBatchSize: int = 64,
+    fandomBatchSize: int = 25,
 ) -> dict:
-    """Walk every fandom archive, smallest first, embedding as it goes.
+    """Walk every fandom archive, smallest first. Crawling only.
 
-    Embedding is interleaved rather than run as a final pass for two reasons.
-    The crawl produces roughly four stories a second while the GPU embeds around
-    thirty, so interleaving keeps GPU duty near a tenth and leaves the card
-    free for whatever else the machine is doing. It also means the corpus is
-    fully searchable, semantically included, at every point during a crawl that
-    takes weeks -- rather than only at the end.
+    This used to embed inline, on the reasoning that interleaving kept the
+    corpus searchable throughout a multi-week crawl and held GPU duty near a
+    tenth. The interleaving was real; the bound on it was not. `_runEmbeddingPass`
+    drains the entire pending queue rather than a slice, so the size of the
+    pause was set by the whole backlog and not by the trigger that fired it.
+    After the 2026-10-27 reset left 164,725 rows pending, one pass ran for 28
+    hours and the crawl ingested nothing at all in that time.
 
-    Embedding triggers on rows as well as fandoms, whichever comes first. A
-    fandom count alone is the wrong clock: it was sized when fandoms held one
-    story each, but the tail of the queue holds hundreds of thousands, so 25
-    fandoms stretched from minutes to hours and would have kept growing. Rows
-    bound the lag no matter how big the archives get.
+    Embedding now belongs entirely to `lodestone-embed`, which can run as
+    several workers since the pending batch is claimed with FOR UPDATE SKIP
+    LOCKED. That keeps the corpus current for the same reason interleaving did,
+    without a crawl that stops to wait for it.
 
     Resumable: every fandom's progress lives in crawl_state, so an interrupted
     run continues where it stopped.
     """
-    totals = {"fandomsCompleted": 0, "rowsIngested": 0, "embedded": 0, "stopped": ""}
+    totals = {"fandomsCompleted": 0, "rowsIngested": 0, "stopped": ""}
 
     while True:
-        pending = store.iterPendingFandoms(limit=embedEveryFandoms)
+        pending = store.iterPendingFandoms(limit=fandomBatchSize)
         if not pending:
             totals["stopped"] = "all fandoms exhausted"
             break
         if maxFandoms is not None and totals["fandomsCompleted"] >= maxFandoms:
             totals["stopped"] = "fandom budget reached"
             break
-
-        rowsSinceEmbedding = 0
 
         for row in pending:
             if maxFandoms is not None and totals["fandomsCompleted"] >= maxFandoms:
@@ -445,31 +439,8 @@ def backfillEverything(
 
             totals["fandomsCompleted"] += 1
             totals["rowsIngested"] += outcome.rowsIngested
-            rowsSinceEmbedding += outcome.rowsIngested
             logger.info("[%d fandoms, %d rows] %s -> %d rows",
                         totals["fandomsCompleted"], totals["rowsIngested"],
                         fandom.name, outcome.rowsIngested)
 
-            # A single large archive can outweigh many small ones, so check the
-            # row budget inside the loop rather than only between batches.
-            if rowsSinceEmbedding >= embedEveryRows:
-                totals["embedded"] += _runEmbeddingPass(connectionString, embedBatchSize)
-                rowsSinceEmbedding = 0
-
-        totals["embedded"] += _runEmbeddingPass(connectionString, embedBatchSize)
-
     return totals
-
-
-def _runEmbeddingPass(connectionString: str, batchSize: int) -> int:
-    """Embed pending rows, tolerating a missing model server.
-
-    Embeddings are an enhancement: losing the model server must not stop a crawl
-    that is otherwise healthy, and anything left unembedded is picked up by the
-    next pass.
-    """
-    try:
-        return backfillEmbeddings(connectionString, batchSize=batchSize)
-    except EmbeddingError as error:
-        logger.warning("embedding pass failed, continuing crawl: %s", error)
-        return 0
