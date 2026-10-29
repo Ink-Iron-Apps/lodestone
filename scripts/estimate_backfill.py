@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import re
 import sys
-import time
 
-from curl_cffi import requests
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "crawler"))
+
+from lodestone_crawler.fetcher import FanFictionFetcher
+from lodestone_crawler.surfaces import crossoverDirectoryUrl, sectionDirectoryUrl
 
 SECTION_SLUGS = ("anime", "book", "cartoon", "comic", "game", "misc", "movie", "play", "tv")
 
@@ -40,8 +42,39 @@ CROSSOVER_ENTRY_PATTERN = re.compile(r'<a href="/crossovers/([^/"]+)/(\d+)/"')
 SUFFIX_MULTIPLIERS = {"": 1, "K": 1_000, "M": 1_000_000}
 
 
+class DirectoryParseError(RuntimeError):
+    """A directory fetched but parsed to nothing, which is never a real answer."""
+
+
 def fetch(session, url: str) -> str:
-    return session.get(url, timeout=30).content.decode("utf-8", errors="replace")
+    """Fetch through the crawler's own fetcher.
+
+    This used to hold its own `requests.Session(impersonate="chrome")` with no
+    headers set. Cloudflare answered 403 "Just a moment..." to every request --
+    a Chrome TLS fingerprint arriving without Chrome's Accept and
+    Accept-Language is a mismatch, and the mismatch is the tell. The requests
+    still returned 200-shaped bodies to this script, which parsed them to zero
+    and printed a confident estimate of nothing.
+
+    FanFictionFetcher sets those headers, enforces the robots.txt crawl-delay
+    itself, and raises BlockedError on a 403 instead of handing back a challenge
+    page. Sharing it also means there is one place where politeness lives.
+    """
+    return session.fetch(url)
+
+
+def requireMatches(count: int, what: str, url: str) -> None:
+    """Fail loudly on a zero, rather than reporting it as a measurement.
+
+    An estimate of zero is always a broken fetch or a stale pattern -- FFN has
+    never had an empty section directory. Reporting it as data is how this
+    script wasted a run; 56d5134 fixed the same silent zero in probe_egress.py.
+    """
+    if count == 0:
+        raise DirectoryParseError(
+            f"{what} parsed to 0 entries from {url} -- fetch or pattern is broken, "
+            f"not an empty directory"
+        )
 
 
 def humanDuration(seconds: float) -> str:
@@ -53,7 +86,7 @@ def humanDuration(seconds: float) -> str:
 
 
 def main() -> int:
-    session = requests.Session(impersonate="chrome")
+    session = FanFictionFetcher()
 
     fandomCount = 0
     storyTotal = 0
@@ -61,7 +94,9 @@ def main() -> int:
 
     print("=== section directories ===")
     for sectionSlug in SECTION_SLUGS:
-        html = fetch(session, f"https://www.fanfiction.net/{sectionSlug}/")
+        url = sectionDirectoryUrl(sectionSlug)
+        html = fetch(session, url)
+        requireMatches(len(COUNT_PATTERN.findall(html)), f"section {sectionSlug}", url)
         sectionStories = 0
         sectionFandoms = 0
         for slugSection, slug, number, suffix in COUNT_PATTERN.findall(html):
@@ -74,18 +109,18 @@ def main() -> int:
         fandomCount += sectionFandoms
         storyTotal += sectionStories
         print(f"  {sectionSlug:9} {sectionFandoms:>6,} fandoms  {sectionStories:>12,} stories")
-        time.sleep(5)
 
     print(f"\n  TOTAL     {fandomCount:>6,} fandoms  {storyTotal:>12,} stories")
 
     print("\n=== crossover directories ===")
     crossoverFandoms: list[tuple[str, str]] = []
     for sectionSlug in SECTION_SLUGS:
-        html = fetch(session, f"https://www.fanfiction.net/crossovers/{sectionSlug}/")
+        url = crossoverDirectoryUrl(sectionSlug)
+        html = fetch(session, url)
+        requireMatches(len(CROSSOVER_ENTRY_PATTERN.findall(html)), f"crossovers {sectionSlug}", url)
         found = sorted(set(CROSSOVER_ENTRY_PATTERN.findall(html)))
         crossoverFandoms.extend(found)
         print(f"  {sectionSlug:9} {len(found):>6,} fandoms with crossover archives")
-        time.sleep(5)
     crossoverFandomCount = len(crossoverFandoms)
 
     # Sampling partner lists needs a UNIFORM sample. An earlier version of this
@@ -111,7 +146,6 @@ def main() -> int:
             if int(a) < int(b)
         }
         canonicalPairCounts.append(len(pairs))
-        time.sleep(5)
 
     canonicalPairCounts.sort()
     medianPairs = canonicalPairCounts[len(canonicalPairCounts) // 2] if canonicalPairCounts else 0
@@ -135,7 +169,14 @@ def main() -> int:
     # one extra request to discover an empty final page.
     naiveRequests = (storyTotal / ROWS_PER_REQUEST + fandomCount) + directoryRequests         + estimatedPairs * (max(1.0, CROSSOVER_ROWS_PER_PAIR / ROWS_PER_REQUEST) + 1)
 
-    totalRequests = fandomRequests + directoryRequests + crossoverRequests
+    # naiveRequests is the real cost now, not the pessimistic alternative. The
+    # short-page shortcut it excludes was removed from the crawler: FFN serves
+    # 24-row pages mid-archive when a story has been deleted, so stopping on one
+    # marked 1,873 fandoms complete early and lost 2.5M stories. Confirming the
+    # end of an archive costs one extra request per surface, and that is the
+    # behaviour being budgeted for.
+    totalRequests = naiveRequests
+    shortcutRequests = fandomRequests + directoryRequests + crossoverRequests
     totalSeconds = totalRequests * SECONDS_PER_REQUEST
     crossoverStories = int(estimatedPairs * CROSSOVER_ROWS_PER_PAIR)
     allStories = storyTotal + crossoverStories
@@ -152,15 +193,17 @@ def main() -> int:
     if allStories > HIGHEST_STORY_ID:
         print(f"  !! exceeds highest story id ({HIGHEST_STORY_ID:,}) -- estimate is too high")
     print()
-    print(f"  requests: fandom archives   {fandomRequests:>14,.0f}")
-    print(f"            crossovers        {crossoverRequests:>14,.0f}")
-    print(f"            directories       {directoryRequests:>14,.0f}")
-    print(f"            TOTAL             {totalRequests:>14,.0f}")
+    print(f"  requests: TOTAL             {totalRequests:>14,.0f}")
+    print(f"            (archives {fandomRequests:,.0f} + crossovers "
+          f"{crossoverRequests:,.0f} + directories {directoryRequests:,.0f},")
+    print(f"             plus one empty page per surface to prove exhaustion)")
     print()
     print(f"  at {SECONDS_PER_REQUEST:.2f}s/request (robots.txt crawl-delay 5s):")
     print(f"            wall clock        {humanDuration(totalSeconds):>14}")
-    print(f"  without short-page exhaustion: {naiveRequests:>10,.0f} req  "
-          f"{humanDuration(naiveRequests * SECONDS_PER_REQUEST)}")
+    print(f"  what the removed short-page shortcut would have cost: "
+          f"{shortcutRequests:,.0f} req  "
+          f"{humanDuration(shortcutRequests * SECONDS_PER_REQUEST)}")
+    print(f"  -- cheaper, and wrong: it lost 2.5M stories. See pipeline.py.")
     print()
     tableBytes = allStories * BYTES_PER_ROW
     vectorBytes = allStories * EMBEDDING_BYTES_PER_ROW
