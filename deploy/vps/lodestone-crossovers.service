@@ -1,0 +1,43 @@
+[Unit]
+Description=Lodestone crossover discovery and backfill
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+# MUST NOT run at the same time as the fandom backfill. The robots.txt
+# crawl-delay of 5s is enforced per fetcher instance, so two crawler processes
+# put FFN under 2.5s between requests, and staying inside that declared delay is
+# the whole basis for this project being allowed to crawl at all. systemd
+# enforces the exclusion rather than leaving it to whoever starts things.
+Conflicts=lodestone-backfill.service
+
+[Service]
+Type=simple
+User=riley
+WorkingDirectory=/home/riley/coding/lodestone
+ExecStart=/home/riley/coding/lodestone/scripts/crossover_backfill.sh
+
+# Crossover archives are the gap the fandom walk cannot close: a crossover story
+# appears in neither parent's archive on FFN, which is why FFN's own search
+# cannot find it. Measured 2026-10-29: 8,782 fandoms have crossover archives,
+# ~51,319 pairs, ~182,248 stories.
+Nice=15
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+MemoryMax=1G
+MemoryHigh=512M
+
+# Phase 2 resumes from crawl_state per archive, and phase 1 is skipped once its
+# marker exists, so restarting after a crash or reboot continues rather than
+# repeating 12 hours of discovery.
+Restart=on-failure
+RestartSec=300
+SuccessExitStatus=0
+
+StandardOutput=append:/var/log/lodestone-crossovers.log
+StandardError=append:/var/log/lodestone-crossovers.log
+SyslogIdentifier=lodestone-crossovers
+
+[Install]
+WantedBy=multi-user.target
