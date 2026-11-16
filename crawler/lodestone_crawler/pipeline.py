@@ -42,15 +42,21 @@ logger = logging.getLogger(__name__)
 #
 # This used to stop on the first short page instead, on the premise that FFN
 # fills a listing completely until it runs out, which saved one request per
-# archive -- ~165K requests across ~13K fandoms and ~158K crossover pairs,
-# roughly a quarter of a full backfill. The premise is false. A story deleted
-# since the page was composed leaves a gap, so FFN serves 24 rows in the middle
-# of an archive and keeps going. Measured on 2026-10-17: Harry Potter page 165
-# returned 24 rows, pages 166 and 167 a full 25 each, all older stories.
+# archive. The premise is false. A story deleted since the page was composed
+# leaves a gap, so FFN serves 24 rows in the middle of an archive and keeps
+# going. Measured on 2026-10-17: Harry Potter page 165 returned 24 rows, pages
+# 166 and 167 a full 25 each, all older stories.
 #
 # The cost of that shortcut was 64 fandoms marked complete early and 2.5M
 # stories never indexed, Harry Potter among them at 4,124 of 805,268. Confirming
 # the end of an archive is worth the extra request; do not reinstate it.
+#
+# What the extra request actually costs, now that both walks have run: 12,849
+# fandom archives took 320,460 requests and 97,348 crossover archives took
+# 201,215. Crossovers are where the confirmation lands hardest -- 98.1% of them
+# hold a single page, so almost every one spends a second request proving the
+# archive ended. That is about 95,000 requests, roughly 5.5 days of crawling at
+# the robots.txt delay, and it is the right trade against 2.5M lost stories.
 
 
 @dataclasses.dataclass(slots=True)

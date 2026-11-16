@@ -2,16 +2,21 @@
 
 A search engine for FanFiction.Net that does the things FFN's own search cannot.
 
-FanFiction.Net hosts something on the order of fourteen million stories and
-gives you a search box that matches titles and summaries, sorts three ways, and
+FanFiction.Net holds roughly eight and a half million stories -- its highest
+issued story id is 14,584,841, but most of those ids belong to stories since
+deleted, and the fandom archives themselves list 8.2 million. It gives you a
+search box that matches titles and summaries, sorts three ways, and
 offers no exclusions, no boolean operators, no completion filter, no way to
 search across fandoms, and no way to tell a story that finished from one
 abandoned in 2013. Every piece of metadata needed to do better is already on the
 page. Lodestone collects it, normalizes it, and puts a real query engine in
 front of it.
 
-**Status: early.** The crawler, parser, search API and web front end all work.
-The corpus is currently a single pilot fandom; a full backfill has not been run.
+**Status: backfill in progress.** The crawler, parser, search API and web front
+end all work. As of 2026-11-15 the corpus holds 7,735,956 stories across 17,668
+fandoms, including 406,457 crossover stories. Every one of the 97,348 crossover
+archives has been walked to exhaustion; 3,417 of the largest fandom archives are
+still being paged through.
 
 ## What it makes possible
 
@@ -47,8 +52,10 @@ Rated: T - English - Hurt/Comfort/Adventure - Chapters: 50 - Words: 449,697
 
 The important discovery is that **listing pages carry the same complete metadata
 line as the story page itself**, at 25 to 100 rows per request. That is what
-makes indexing the whole corpus affordable: roughly 480,000 requests rather than
-the 14.6 million a story-by-story crawl would need.
+makes indexing the whole corpus affordable: roughly 670,000 requests rather than
+the 14.6 million a story-by-story crawl would need. Measured as it was spent:
+about 460,000 for the fandom archives, 201,215 for the crossover archives, and
+8,800 for the directories that enumerate them.
 
 ```
                       ┌──────────────────────────┐

@@ -20,8 +20,10 @@ ExecStart=/home/riley/coding/lodestone/scripts/crossover_backfill.sh
 
 # Crossover archives are the gap the fandom walk cannot close: a crossover story
 # appears in neither parent's archive on FFN, which is why FFN's own search
-# cannot find it. Measured 2026-10-29: 8,782 fandoms have crossover archives,
-# ~51,319 pairs, ~182,248 stories.
+# cannot find it. The walk completed 2026-11-10: 8,782 fandoms have crossover
+# archives, 97,348 pairs between them, 406,457 stories. Phase 1 took 6.5 hours
+# and phase 2 about 12 days. The pre-crawl estimate of 51,319 pairs and 182,248
+# stories was extrapolated from 16 fandoms and came out roughly half of both.
 Nice=15
 CPUSchedulingPolicy=batch
 IOSchedulingClass=idle

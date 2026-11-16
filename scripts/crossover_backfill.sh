@@ -5,16 +5,18 @@
 # finishes, and both are long enough to want a service around them.
 #
 # Phase 1 (discover-crossovers) sweeps 9 crossover directories and then one
-# partner page per fandom that has crossovers -- about 8,800 requests, so
-# roughly 12 hours at the robots.txt crawl-delay. It is idempotent but NOT
+# partner page per fandom that has crossovers -- about 8,800 requests. Measured
+# at 6.5 hours on 2026-10-29, not the 12 estimated from the crawl-delay alone. It is idempotent but NOT
 # resumable: every pair is inserted ON CONFLICT DO NOTHING, so a restart costs
 # the requests again rather than duplicating rows. The marker file below is what
 # keeps a service restart from paying that twice.
 #
 # Phase 2 (backfill-crossovers) walks each pair's archive, resuming from
 # crawl_state exactly like the fandom backfill, so it is safe to interrupt at
-# any point. Measured estimate: ~51,319 pairs averaging 3.6 stories, about 3.5
-# days.
+# any point. What it actually cost, run to completion on 2026-11-10: 97,348
+# pairs averaging 4.17 stories, 201,215 requests, about 12 days. 98.1% of those
+# archives hold a single page, so nearly every one spends a second request
+# proving it ended -- that confirmation is half the wall clock here.
 #
 # This must not run alongside lodestone-backfill. The 5s crawl-delay is enforced
 # per fetcher instance, so two crawler processes put FFN under 2.5s between

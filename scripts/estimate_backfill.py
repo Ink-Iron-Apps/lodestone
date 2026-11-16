@@ -32,7 +32,13 @@ BYTES_PER_ROW = 409
 # ids are sequential and never reassigned, so no estimate may exceed it.
 HIGHEST_STORY_ID = 14_584_841
 EMBEDDING_BYTES_PER_ROW = 768 * 4     # float32 vector(768)
-CROSSOVER_ROWS_PER_PAIR = 277 / 78    # 3.6; crossover archives are mostly tiny
+# Measured over the completed crossover walk, 2026-11-10: every one of the
+# 97,348 pairs discovered was crawled to exhaustion. These are counts, not
+# estimates, and they replace a 16-fandom extrapolation that came out 89% low
+# (it predicted 51,319 pairs) with rows-per-pair 13% low (it predicted 3.6).
+MEASURED_CROSSOVER_PAIRS = 97_348
+MEASURED_CROSSOVER_STORIES = 406_457
+CROSSOVER_ROWS_PER_PAIR = MEASURED_CROSSOVER_STORIES / MEASURED_CROSSOVER_PAIRS  # 4.17
 
 COUNT_PATTERN = re.compile(
     r'<a href="/([a-z]+)/([^/"]+)/"[^>]*>(?:.*?)</a>\s*<SPAN CLASS=\'gray\'>\((\d+(?:\.\d+)?)([KM]?)\)</SPAN>'
@@ -155,7 +161,17 @@ def main() -> int:
 
     # Each pair is listed by both partners, so summing across fandoms counts
     # every pair twice.
-    estimatedPairs = int(crossoverFandomCount * meanPairs / 2)
+    #
+    # This extrapolation is kept only to show how badly it performs. A sample of
+    # 16 cannot carry a mean across a distribution this skewed: it predicted
+    # 51,319 pairs against the 97,348 the crawl actually found. The budget below
+    # uses the measured count instead, and a future re-run should trust a fresh
+    # count over anything this line produces.
+    sampledPairs = int(crossoverFandomCount * meanPairs / 2)
+    estimatedPairs = MEASURED_CROSSOVER_PAIRS
+    sampleError = (sampledPairs - estimatedPairs) / estimatedPairs * 100
+    print(f"  extrapolated {sampledPairs:,} pairs from that sample; "
+          f"measured count is {estimatedPairs:,} ({sampleError:+.0f}%)")
 
     # --- request budget ----------------------------------------------------
     # Pages are whole requests: an archive holding 3 stories still costs one
@@ -187,8 +203,8 @@ def main() -> int:
     print(f"  fandoms                     {fandomCount:>14,}")
     print(f"  stories in fandom archives  {storyTotal:>14,}")
     print(f"  fandoms w/ crossovers       {crossoverFandomCount:>14,}")
-    print(f"  estimated crossover pairs   {estimatedPairs:>14,}  (upper bound)")
-    print(f"  estimated crossover stories {crossoverStories:>14,}")
+    print(f"  crossover pairs             {estimatedPairs:>14,}  (measured)")
+    print(f"  crossover stories           {crossoverStories:>14,}  (measured)")
     print(f"  TOTAL STORIES               {allStories:>14,}")
     if allStories > HIGHEST_STORY_ID:
         print(f"  !! exceeds highest story id ({HIGHEST_STORY_ID:,}) -- estimate is too high")
