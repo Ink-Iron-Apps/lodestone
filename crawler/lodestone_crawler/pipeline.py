@@ -297,13 +297,26 @@ def discoverPairsForFandom(
     return len(pairs)
 
 
+def _crossoverParent(store: StoryStore, categoryId: int) -> Fandom:
+    """The fandom FFN numbers `categoryId`, or a placeholder naming that id."""
+    known = store.getFandomByCategoryId(categoryId)
+    if known is not None:
+        return Fandom(
+            name=known["name"],
+            sectionSlug=known["section_slug"],
+            fandomSlug=known["fandom_slug"],
+            categoryId=categoryId,
+        )
+    return Fandom(name=f"FFN category {categoryId}", categoryId=categoryId)
+
+
 def backfillCrossoverPair(
     fetcher: FanFictionFetcher,
     store: StoryStore,
     categoryIdA: int,
     categoryIdB: int,
-    slugA: str,
-    slugB: str,
+    slugA: Optional[str] = None,
+    slugB: Optional[str] = None,
     maxPages: Optional[int] = None,
 ) -> CrawlOutcome:
     """Walk one A-x-B crossover archive to exhaustion.
@@ -316,10 +329,25 @@ def backfillCrossoverPair(
     if state and state["is_exhausted"]:
         return CrawlOutcome(surfaceKey, isExhausted=True, stoppedReason="already exhausted")
 
-    contextFandoms = [
-        Fandom(name=slugA.replace("-", " "), fandomSlug=slugA, categoryId=categoryIdA),
-        Fandom(name=slugB.replace("-", " "), fandomSlug=slugB, categoryId=categoryIdB),
-    ]
+    # Look the parents up by the ids in the URL. De-slugging the URL instead --
+    # `slugA.replace("-", " ")` -- is what produced 4,509 near-miss duplicate
+    # fandoms ("Star Wars The Clone Wars" against the directory's "Star Wars:
+    # The Clone Wars") holding 166,463 misattributed story links, cleaned up in
+    # db/migrations/009_fandom_identity.sql.
+    #
+    # An id with no fandom row is one FFN lists an archive for but we have not
+    # read a directory entry for yet. Naming it after the category id says that
+    # much and nothing more; the next directory sweep fills in the real title.
+    parentA = _crossoverParent(store, categoryIdA)
+    parentB = _crossoverParent(store, categoryIdB)
+    contextFandoms = [parentA, parentB]
+
+    # The slug half of the URL is cosmetic: FFN resolves the archive from the
+    # two ids and serves it whatever the slugs say. Measured -- 5,024 pairs were
+    # crawled with a mis-split slug_a and returned 22,903 stories. Prefer the
+    # fandom's real slug anyway, so the logged URL is the one a human can open.
+    slugA = parentA.fandomSlug or slugA or "Crossovers"
+    slugB = parentB.fandomSlug or slugB or "Crossovers"
 
     outcome = CrawlOutcome(surfaceKey)
     pageNumber = (state["last_page"] if state else 0) + 1

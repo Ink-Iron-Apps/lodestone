@@ -261,8 +261,18 @@ def iterFandomDirectory(html: str, sectionSlug: str) -> Iterator[Fandom]:
 CROSSOVER_ENTRY_PATTERN = re.compile(
     r'<a href="/crossovers/([^/"]+)/(\d+)/"[^>]*>(.*?)</a>'
 )
+# The slug half of a crossover URL cannot be split into its two fandoms. It is
+# "<A>-and-<B>-Crossovers", and a fandom name may itself contain "and", so
+# /Batman-and-Tom-and-Jerry-Crossovers/50/5618/ reads equally well as
+# Batman x (Tom and Jerry) or (Batman and Tom) x Jerry. Splitting it greedily
+# chose the second for 5,024 of the 97,348 pairs discovered.
+#
+# Nothing is lost by refusing to split it, because FFN routes the archive on the
+# two numeric ids and ignores the slug text entirely -- those 5,024 pairs were
+# all crawled with a wrong slug_a and still returned 22,903 stories. So capture
+# the blob whole and let the ids name the fandoms.
 CROSSOVER_PAIR_PATTERN = re.compile(
-    r'<a href="/([A-Za-z0-9._-]+)-and-([A-Za-z0-9._-]+)-Crossovers/(\d+)/(\d+)/"'
+    r'<a href="/([A-Za-z0-9._-]+)-Crossovers/(\d+)/(\d+)/"'
 )
 
 
@@ -280,8 +290,12 @@ def iterCrossoverDirectory(html: str) -> Iterator[Fandom]:
         )
 
 
-def parseCrossoverPairs(html: str) -> list[tuple[int, int, str, str]]:
-    """Extract (idA, idB, slugA, slugB) pairs from a fandom's partner list.
+def parseCrossoverPairs(html: str) -> list[tuple[int, int, str]]:
+    """Extract (idA, idB, urlSlug) pairs from a fandom's partner list.
+
+    `urlSlug` is the undivided "<A>-and-<B>" blob; which fandom each half
+    belongs to is decided by looking the ids up, not by cutting the string. See
+    CROSSOVER_PAIR_PATTERN above for why.
 
     FFN orders the pair URL by ascending category id regardless of which
     fandom's page you are on, so the tuple is already canonical and the same
@@ -294,7 +308,7 @@ def parseCrossoverPairs(html: str) -> list[tuple[int, int, str, str]]:
     """
     pairs = []
     for match in CROSSOVER_PAIR_PATTERN.finditer(html):
-        slugA, slugB, idA, idB = match.group(1), match.group(2), int(match.group(3)), int(match.group(4))
+        urlSlug, idA, idB = match.group(1), int(match.group(2)), int(match.group(3))
         if idA < idB:
-            pairs.append((idA, idB, slugA, slugB))
+            pairs.append((idA, idB, urlSlug))
     return pairs

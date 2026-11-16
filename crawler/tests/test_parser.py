@@ -323,11 +323,24 @@ def testCrossoverPairsAreCanonicallyOrdered():
     pairs = parseCrossoverPairs(html)
 
     assert pairs == [
-        (224, 1402, "Harry-Potter", "Naruto"),
-        (1402, 1758, "Naruto", "Bleach"),
+        (224, 1402, "Harry-Potter-and-Naruto"),
+        (1402, 1758, "Naruto-and-Bleach"),
     ]
-    for idA, idB, _, _ in pairs:
+    for idA, idB, _ in pairs:
         assert idA < idB
+
+
+def testCrossoverSlugIsNotSplitIntoFandoms():
+    """The slug half of the URL is "<A>-and-<B>" and a fandom name may itself
+    contain "and", so there is no reliable place to cut it. Splitting it greedily
+    read /Batman-and-Tom-and-Jerry-Crossovers/ as (Batman and Tom) x Jerry, which
+    fabricated a "Batman and Tom" fandom. The blob is kept whole and the ids name
+    the partners."""
+    pairs = parseCrossoverPairs(
+        '<a href="/Batman-and-Tom-and-Jerry-Crossovers/50/5618/">Tom and Jerry</a>'
+    )
+
+    assert pairs == [(50, 5618, "Batman-and-Tom-and-Jerry")]
 
 
 def testSamePairFromBothSidesDeduplicates():

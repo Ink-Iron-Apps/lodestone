@@ -58,15 +58,30 @@ ON CONFLICT (story_id) DO UPDATE SET
     END
 """
 
+# A fandom is identified by its archive URL, not by its title. FFN lists the
+# same title in several sections as separate archives -- "Teen Titans" is 1,800
+# comic stories and 41,300 cartoon ones -- so keying on name merged them and
+# left the loser uncrawled. See db/migrations/009_fandom_identity.sql.
 UPSERT_FANDOM_SQL = """
 INSERT INTO fandoms (name, section_slug, fandom_slug, category_id, story_count)
 VALUES (%(name)s, %(sectionSlug)s, %(fandomSlug)s, %(categoryId)s, %(storyCount)s)
-ON CONFLICT (name) DO UPDATE SET
-    -- Never overwrite a known slug/id with the NULLs a bare listing row carries.
-    section_slug = COALESCE(EXCLUDED.section_slug, fandoms.section_slug),
-    fandom_slug  = COALESCE(EXCLUDED.fandom_slug,  fandoms.fandom_slug),
-    category_id  = COALESCE(EXCLUDED.category_id,  fandoms.category_id),
-    story_count  = COALESCE(EXCLUDED.story_count,  fandoms.story_count)
+ON CONFLICT (section_slug, fandom_slug) WHERE fandom_slug IS NOT NULL DO UPDATE SET
+    name        = COALESCE(EXCLUDED.name, fandoms.name),
+    -- Never overwrite a known id/count with the NULLs a bare listing row carries.
+    category_id = COALESCE(EXCLUDED.category_id, fandoms.category_id),
+    story_count = COALESCE(EXCLUDED.story_count, fandoms.story_count)
+RETURNING id
+"""
+
+# A listing row may name a fandom we have never walked, and carries no slug for
+# it. Name is then the only thing to deduplicate on, so this is scoped to rows
+# that have no slug -- it can never again merge two real archives.
+UPSERT_UNSLUGGED_FANDOM_SQL = """
+INSERT INTO fandoms (name, category_id, story_count)
+VALUES (%(name)s, %(categoryId)s, %(storyCount)s)
+ON CONFLICT (name) WHERE fandom_slug IS NULL DO UPDATE SET
+    category_id = COALESCE(EXCLUDED.category_id, fandoms.category_id),
+    story_count = COALESCE(EXCLUDED.story_count, fandoms.story_count)
 RETURNING id
 """
 
@@ -96,15 +111,46 @@ class StoryStore:
         self.close()
 
     def upsertFandom(self, fandom: Fandom) -> int:
+        """Write a fandom and return its id, keyed on the archive URL.
+
+        A sighting with no slug takes the name-scoped path instead. Resolving by
+        category id first is what keeps the crossover walk from inventing a
+        second row for a fandom it already knows: the ids in a crossover URL are
+        the only identifier that walk has.
+        """
+        if fandom.fandomSlug is None and fandom.categoryId is not None:
+            known = self.getFandomByCategoryId(fandom.categoryId)
+            if known is not None:
+                return known["id"]
+
+        statement = (UPSERT_FANDOM_SQL if fandom.fandomSlug is not None
+                     else UPSERT_UNSLUGGED_FANDOM_SQL)
+        parameters = {
+            "name": fandom.name,
+            "categoryId": fandom.categoryId,
+            "storyCount": fandom.storyCount,
+        }
+        if fandom.fandomSlug is not None:
+            parameters["sectionSlug"] = fandom.sectionSlug
+            parameters["fandomSlug"] = fandom.fandomSlug
+
         with self._connection.cursor() as cursor:
-            cursor.execute(UPSERT_FANDOM_SQL, {
-                "name": fandom.name,
-                "sectionSlug": fandom.sectionSlug,
-                "fandomSlug": fandom.fandomSlug,
-                "categoryId": fandom.categoryId,
-                "storyCount": fandom.storyCount,
-            })
+            cursor.execute(statement, parameters)
             return cursor.fetchone()["id"]
+
+    def getFandomByCategoryId(self, categoryId: int) -> Optional[dict]:
+        """The fandom FFN numbers `categoryId`, if we have walked or listed it.
+
+        This is the lookup the crossover walk needs and did not have. Without
+        it, backfillCrossoverPair built a parent fandom by de-slugging the URL,
+        which produced 4,509 near-miss duplicate rows holding 166,463 story
+        links -- "Star Wars The Clone Wars" beside the real "Star Wars: The
+        Clone Wars".
+        """
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM fandoms WHERE category_id = %s", (categoryId,))
+            return cursor.fetchone()
 
     def upsertStories(self, records: Iterable[StoryRecord]) -> int:
         """Write a batch of stories and their fandom links in one transaction."""
@@ -200,21 +246,33 @@ class StoryStore:
 
     # -- crossover pairs ---------------------------------------------------
 
-    def upsertCrossoverPairs(self, pairs: list[tuple[int, int, str, str]]) -> int:
+    def upsertCrossoverPairs(self, pairs: list[tuple[int, int, str]]) -> int:
         """Record discovered crossover pairs.
 
-        Pairs arrive already ordered by ascending category id, which is how FFN
-        builds the archive URL. Because each pair is listed on both partners'
-        pages, the same tuple is discovered twice and the conflict clause makes
-        the second sighting free.
+        Pairs arrive as (idA, idB, urlSlug) already ordered by ascending
+        category id, which is how FFN builds the archive URL. Because each pair
+        is listed on both partners' pages, the same tuple is discovered twice
+        and the conflict clause makes the second sighting free.
+
+        The per-fandom slugs are taken from the fandoms table by id rather than
+        cut out of `urlSlug`, which cannot be divided reliably -- see
+        parser.CROSSOVER_PAIR_PATTERN. Either may be NULL for a fandom we have
+        not walked; the archive URL is routed on the ids regardless.
         """
         if not pairs:
             return 0
         with self._connection.cursor() as cursor:
             cursor.executemany(
-                "INSERT INTO crossover_pairs (fandom_id_a, fandom_id_b, slug_a, slug_b) "
-                "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                pairs,
+                """
+                INSERT INTO crossover_pairs (fandom_id_a, fandom_id_b, slug_a, slug_b)
+                VALUES (
+                    %s, %s,
+                    (SELECT fandom_slug FROM fandoms WHERE category_id = %s),
+                    (SELECT fandom_slug FROM fandoms WHERE category_id = %s)
+                )
+                ON CONFLICT DO NOTHING
+                """,
+                [(idA, idB, idA, idB) for idA, idB, _ in pairs],
             )
         self._connection.commit()
         return len(pairs)
@@ -222,12 +280,22 @@ class StoryStore:
     def iterCrossoverPairs(self, limit: Optional[int] = None) -> list[dict]:
         """Pairs whose archive has not yet been walked to exhaustion."""
         with self._connection.cursor() as cursor:
+            # Slugs come from the fandoms table, falling back to whatever was
+            # stored with the pair. The stored copy is only a cache: the ids are
+            # the identity, and a slug repaired in fandoms should take effect
+            # here without rewriting crossover_pairs.
             cursor.execute(
                 """
-                SELECT p.fandom_id_a, p.fandom_id_b, p.slug_a, p.slug_b
+                SELECT p.fandom_id_a, p.fandom_id_b,
+                       COALESCE(fa.fandom_slug, p.slug_a) AS slug_a,
+                       COALESCE(fb.fandom_slug, p.slug_b) AS slug_b,
+                       fa.id AS id_a, fb.id AS id_b,
+                       fa.name AS name_a, fb.name AS name_b
                 FROM crossover_pairs p
                 LEFT JOIN crawl_state c
                     ON c.surface_key = 'crossover:' || p.fandom_id_a || '/' || p.fandom_id_b
+                LEFT JOIN fandoms fa ON fa.category_id = p.fandom_id_a
+                LEFT JOIN fandoms fb ON fb.category_id = p.fandom_id_b
                 WHERE c.is_exhausted IS NOT TRUE
                 ORDER BY p.fandom_id_a, p.fandom_id_b
                 LIMIT %s
