@@ -1,0 +1,21 @@
+[Unit]
+Description=Back up the Lodestone corpus metadata
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=riley
+Group=riley
+ExecStart=/home/riley/coding/lodestone/deploy/lodestone-backup metadata
+
+# Yields to the API and the crawler. A backup that finishes an hour late is
+# still a backup; a search that times out is a broken service.
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+StandardOutput=append:/var/log/lodestone-backup.log
+StandardError=append:/var/log/lodestone-backup.log
+SyslogIdentifier=lodestone-backup

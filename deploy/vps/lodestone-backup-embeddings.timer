@@ -1,0 +1,10 @@
+[Unit]
+Description=Copy the Lodestone summary vectors off-site weekly
+
+[Timer]
+# Sunday 05:00, after that morning's metadata backup has finished.
+OnCalendar=Sun *-*-* 05:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

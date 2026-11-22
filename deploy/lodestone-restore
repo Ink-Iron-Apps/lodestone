@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# Restore a Lodestone backup into a database.
+#
+#     lodestone-restore <stamp|directory> <target-database>
+#
+# The backup is in two pieces, for the reasons in deploy/lodestone-backup:
+# a `schema-and-tables.dump` holding the schema plus every table's data except
+# the stories rows, and a `stories.copy.zst` holding those rows without their
+# vectors. This replays both, in the order that does not cost hours.
+#
+# Rehearsal: LODESTONE_RESTORE_STORY_LIMIT=200000 restores only the first N
+# story rows, which exercises this whole path in minutes instead of filling the
+# disk. The restore is then a real but partial corpus -- fine for verifying the
+# backup, not a recovery.
+#
+# Vectors are not here. They are off-site only; fetch and apply them with
+# --embeddings once the rest is up (see the bottom of this file), or leave them
+# out and let lodestone-embed recompute them, which takes about a month for a
+# full corpus.
+#
+# NEEDS A SUPERUSER for two steps: creating the database and creating the
+# `vector` and `pg_trgm` extensions. Everything after that runs as the
+# lodestone role. Pass LODESTONE_SUPERUSER_PSQL to override how that is
+# reached; the default shells out through sudo to the postgres account.
+set -euo pipefail
+
+source_="${1:-}"
+targetDatabase="${2:-}"
+backupRoot="${LODESTONE_BACKUP_DIR:-/home/riley/backups/lodestone}"
+projectRoot="${LODESTONE_ROOT:-/home/riley/coding/lodestone}"
+storyLimit="${LODESTONE_RESTORE_STORY_LIMIT:-0}"
+superuserPsql="${LODESTONE_SUPERUSER_PSQL:-sudo -u postgres psql}"
+
+if [[ -z "$source_" || -z "$targetDatabase" ]]; then
+    printf 'usage: %s <stamp|directory> <target-database>\n' "$(basename "$0")" >&2
+    exit 2
+fi
+backupDir="$source_"
+[[ -d "$backupDir" ]] || backupDir="$backupRoot/$source_"
+[[ -d "$backupDir" ]] || { printf 'No backup at %s\n' "$backupDir" >&2; exit 1; }
+
+set -a; source "$projectRoot/.env"; set +a
+export PGPASSWORD="$POSTGRES_PASSWORD"
+pgHost="${POSTGRES_HOST:-127.0.0.1}"
+pgPort="${POSTGRES_PORT:-5432}"
+pgArgs=(-h "$pgHost" -p "$pgPort" -U "$POSTGRES_USER" -d "$targetDatabase")
+
+printf '== verifying %s\n' "$backupDir"
+( cd "$backupDir" && sha256sum --quiet --check SHA256SUMS )
+columns="$(sed -n 's/^stories cols:  *//p' "$backupDir/MANIFEST")"
+[[ -n "$columns" ]] || { printf 'MANIFEST has no column list.\n' >&2; exit 1; }
+
+printf '== creating database %s\n' "$targetDatabase"
+$superuserPsql -v ON_ERROR_STOP=1 -qtAX -c \
+    "CREATE DATABASE \"$targetDatabase\" OWNER \"$POSTGRES_USER\""
+# pg_restore would issue these itself, but CREATE EXTENSION needs rights the
+# lodestone role does not have, and the failure arrives 10,000 lines into the
+# restore rather than at the start.
+$superuserPsql -v ON_ERROR_STOP=1 -qtAX -d "$targetDatabase" \
+    -c 'CREATE EXTENSION IF NOT EXISTS vector' \
+    -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm'
+
+# The dump is replayed in three sections rather than in one pass, so that the
+# stories COPY lands between the rows and the indexes. Naming the sections
+# means naming all of them: restoring pre-data and post-data alone produced a
+# perfect, complete, empty database -- every table's rows live in the data
+# section, and the first rehearsal came back with 0 fandoms, 0 crawl_state and
+# 0 story_fandoms while reporting success. The row counts at the end of this
+# script exist because of that.
+#
+# Tables, types and functions -- deliberately no indexes yet.
+#
+# --no-comments because the dump carries COMMENT ON EXTENSION for vector and
+# pg_trgm, which only their owner may set. Restoring as the lodestone role
+# fails both, and pg_restore then exits 1 for "errors ignored" -- which under
+# set -e aborted the restore after the schema and before a single row, while
+# still reporting success through a pipe. The schema itself has no comments
+# (checked: pg_description holds none for public), so nothing is lost.
+printf '== schema and small tables (pre-data)\n'
+pg_restore "${pgArgs[@]}" --no-owner --no-privileges --no-comments \
+    --section=pre-data "$backupDir/schema-and-tables.dump"
+
+# Every table's rows except the stories: fandoms, story_fandoms, crawl_state
+# and crossover_pairs. `--exclude-table-data=public.stories` at dump time is
+# what leaves this section safe to replay wholesale.
+printf '== table data (data)\n'
+pg_restore "${pgArgs[@]}" --no-owner --no-privileges --no-comments \
+    --section=data "$backupDir/schema-and-tables.dump"
+
+printf '== stories rows\n'
+if (( storyLimit > 0 )); then
+    printf '   (rehearsal: first %s rows only)\n' "$storyLimit"
+    # `|| true` because head closes the pipe at N lines and zstd then dies of
+    # SIGPIPE, which under `set -o pipefail` aborted the restore right after
+    # the rows landed and before any index was built.
+    { zstd -dc "$backupDir/stories.copy.zst" || true; } | head -n "$storyLimit" \
+        | psql "${pgArgs[@]}" -v ON_ERROR_STOP=1 -qX \
+            -c "\\copy stories($columns) FROM STDIN"
+else
+    zstd -dc "$backupDir/stories.copy.zst" \
+        | psql "${pgArgs[@]}" -v ON_ERROR_STOP=1 -qX \
+            -c "\\copy stories($columns) FROM STDIN"
+fi
+
+# story_fandoms carries a foreign key to stories that post-data creates and
+# validates, and two things can leave it unsatisfiable. A rehearsal restores
+# every link and only some stories. And even a full backup takes its two pieces
+# from two snapshots -- pg_dump for the tables, a separate COPY for the stories
+# -- while the crawler keeps writing, so a story hard-deleted between them is
+# referenced by links that outlived it. Either way, dropping the dangling links
+# costs a handful of rows; letting post-data fail costs the whole restore.
+printf '== dropping story_fandoms links with no story: '
+psql "${pgArgs[@]}" -v ON_ERROR_STOP=1 -tAX -c \
+    'WITH dropped AS (
+         DELETE FROM story_fandoms f
+         WHERE NOT EXISTS (SELECT 1 FROM stories s WHERE s.story_id = f.story_id)
+         RETURNING 1)
+     SELECT count(*) FROM dropped'
+
+# Rows first, indexes second. The table carries 18.6 GB of indexes; building
+# them once over a full table is far cheaper than maintaining them per row, and
+# the HNSW graph in particular is built in bulk by design.
+printf '== indexes and constraints (post-data)\n'
+pg_restore "${pgArgs[@]}" --no-owner --no-privileges --no-comments \
+    --section=post-data \
+    "$backupDir/schema-and-tables.dump"
+
+# Materialized views hold no data in a dump -- only their definitions -- so the
+# API's stats and facet endpoints are empty until these run.
+printf '== refreshing materialized views\n'
+psql "${pgArgs[@]}" -v ON_ERROR_STOP=1 -qX \
+    -c 'REFRESH MATERIALIZED VIEW corpus_stats' \
+    -c 'REFRESH MATERIALIZED VIEW facet_counts'
+
+# Named tables rather than a bare ANALYZE, which also walks the shared
+# catalogs and warns about each one it may not touch.
+printf '== analyzing\n'
+psql "${pgArgs[@]}" -v ON_ERROR_STOP=1 -qX \
+    -c 'ANALYZE stories, story_fandoms, fandoms, crawl_state, crossover_pairs'
+
+psql "${pgArgs[@]}" -qX -c "
+    SELECT 'stories' AS table, count(*) FROM stories
+    UNION ALL SELECT 'story_fandoms', count(*) FROM story_fandoms
+    UNION ALL SELECT 'fandoms', count(*) FROM fandoms
+    UNION ALL SELECT 'crawl_state', count(*) FROM crawl_state
+    UNION ALL SELECT 'crossover_pairs', count(*) FROM crossover_pairs
+    UNION ALL SELECT 'facet_counts', count(*) FROM facet_counts
+    UNION ALL SELECT 'with vectors', count(*) FROM stories WHERE summary_embedding IS NOT NULL"
+
+cat <<'NOTES'
+
+Restored. The corpus has no vectors yet, so keyword search works and semantic
+search does not. Two ways to finish:
+
+  1. Let it recompute. Start lodestone-embed@1 and wait -- about 11,200
+     stories/hour, so roughly a month for a full corpus.
+
+  2. Apply the off-site copy, which takes minutes:
+
+       wrangler r2 object get lodestone-backups/embeddings/<stamp>/vectors.part-000.age --file vectors.part-000.age
+       ...                                                    (one per part)
+       cat vectors.part-*.age | age -d -i <private-key> | zstd -d > vectors.copy
+       psql -c 'CREATE UNLOGGED TABLE vector_restore (story_id bigint primary key, summary_embedding halfvec(768))'
+       psql -c "\copy vector_restore FROM 'vectors.copy'"
+       psql -c 'UPDATE stories s SET summary_embedding = v.summary_embedding
+                FROM vector_restore v WHERE v.story_id = s.story_id'
+       psql -c 'DROP TABLE vector_restore'
+
+     The HNSW index over the quantized column is maintained by that UPDATE, so
+     it does not need rebuilding; REINDEX it only if it was skipped above.
+
+The private age key is not on this machine, by design. Without it the off-site
+copies cannot be read -- recovery needs the key from wherever it is kept.
+NOTES

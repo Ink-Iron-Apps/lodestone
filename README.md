@@ -172,6 +172,35 @@ Keep `impersonate="chrome"`. It is a rolling alias onto the newest profile
 `curl_cffi` ships; pinning a numbered target such as `chrome146` goes stale as
 Chrome moves on.
 
+## Backups
+
+The corpus is 26 GB and all but a gigabyte of that is one column, so it is
+backed up in two pieces rather than one.
+
+```bash
+deploy/lodestone-backup metadata      # nightly, ~0.9 GB
+deploy/lodestone-backup embeddings    # weekly, ~18.5 GB, off-site only
+deploy/lodestone-restore <stamp> <target-database>
+```
+
+`metadata` dumps the schema and every table, with the stories' 768-dimension
+vectors left out. That is what makes it small: the vectors are half-precision
+floats rendered as text, which does not compress, and they cost twenty times
+the rest of the corpus put together. Copies land in `~/backups/lodestone`
+(seven kept) and, encrypted to an age public key, in the `lodestone-backups` R2
+bucket (thirty days).
+
+`embeddings` streams the vectors straight to R2 without writing them to this
+disk, which has no room for them. They are derived data -- `lodestone-embed`
+recomputes them from each summary with no network access -- but at the observed
+11,200 stories/hour that is about a month of work for a full corpus, so a copy
+is worth the 18.5 GB.
+
+Either way a restore gives a working corpus; without the vectors, keyword
+search works and semantic search is degraded until they are applied or
+recomputed. The private half of the age key is deliberately not on this
+machine, so recovery needs it from wherever it is kept.
+
 ## Tests
 
 ```bash

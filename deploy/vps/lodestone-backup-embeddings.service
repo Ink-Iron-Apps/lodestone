@@ -1,0 +1,21 @@
+[Unit]
+Description=Copy the Lodestone summary vectors off-site
+Documentation=https://github.com/Ink-Iron-Apps/lodestone
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=riley
+Group=riley
+ExecStart=/home/riley/coding/lodestone/deploy/lodestone-backup embeddings
+
+# Reads 12 GB of TOAST and uploads ~18.5 GB in 250 MiB parts, so it runs at the
+# back of the IO queue and is given room to take an hour or more.
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=6h
+
+StandardOutput=append:/var/log/lodestone-backup.log
+StandardError=append:/var/log/lodestone-backup.log
+SyslogIdentifier=lodestone-backup-embeddings

@@ -1,0 +1,12 @@
+[Unit]
+Description=Back up Lodestone metadata nightly
+
+[Timer]
+# 04:10, after nexus (03:35) and the other backups on this box, so they are not
+# all competing for the same disk.
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

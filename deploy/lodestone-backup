@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# Back up the Lodestone corpus.
+#
+#     lodestone-backup metadata     nightly   -- everything but the vectors
+#     lodestone-backup embeddings   weekly    -- the vectors, off-site only
+#
+# WHY TWO MODES
+#
+# The database is 26 GB and almost all of it is one column. Measured
+# 2026-11-22 by dumping real samples and compressing them with zstd -3:
+#
+#     every table, `stories` minus `summary_embedding`   ~0.9 GB
+#     `summary_embedding` alone                         ~18.5 GB
+#
+# The vectors are 768 half-precision floats per story rendered as text, which
+# zstd cannot compress -- they cost twenty times the rest of the corpus put
+# together. They are also derived data: `lodestone-embed` recomputes them from
+# `summary` with no network access at all. So they are separated from the
+# nightly backup, taken weekly instead, and streamed straight to R2 without
+# ever landing on this disk, which was 83% full when this was written.
+#
+# They are still worth keeping. Re-embedding the whole corpus at the observed
+# 11,200 stories/hour is about 30 days of worker time, so a restore that has
+# them comes back searchable immediately and one that does not takes a month to
+# get there. A restore works either way; only semantic search is degraded while
+# it catches up.
+#
+# RESTORE -- see deploy/lodestone-restore, which does all of this. In outline:
+#
+#     1. pg_restore --section=pre-data   (schema, no indexes)
+#     2. COPY the stories rows back in, using the column list in MANIFEST
+#     3. pg_restore --section=post-data  (indexes, constraints)
+#     4. optionally COPY the vectors back from the R2 copy
+#
+# Doing it in that order matters: the table carries 18.6 GB of indexes, and
+# building them once after the rows are in beats maintaining them per row.
+#
+# Off-site copies are encrypted to an age public key. Only the public half is
+# on this machine, so a compromised server cannot read its own backups -- and
+# cannot be used to read Nexus's either, because it is the same key pair and
+# the private half lives off the box.
+set -euo pipefail
+
+mode="${1:-metadata}"
+backupRoot="${LODESTONE_BACKUP_DIR:-/home/riley/backups/lodestone}"
+projectRoot="${LODESTONE_ROOT:-/home/riley/coding/lodestone}"
+keepLocal="${LODESTONE_KEEP_BACKUPS:-7}"
+pubkey="${LODESTONE_BACKUP_AGE_KEY:-/home/riley/.config/lodestone/backup-age.pub}"
+bucket="${LODESTONE_BACKUP_BUCKET:-lodestone-backups}"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+
+# Credentials come from the repo's .env, the same file the services read, so
+# they are never in a unit file or a shell history.
+if [[ ! -f "$projectRoot/.env" ]]; then
+    printf 'No %s/.env -- cannot reach the database.\n' "$projectRoot" >&2
+    exit 1
+fi
+set -a; source "$projectRoot/.env"; set +a
+export PGPASSWORD="$POSTGRES_PASSWORD"
+pgArgs=(-h "${POSTGRES_HOST:-127.0.0.1}" -p "${POSTGRES_PORT:-5432}"
+        -U "$POSTGRES_USER" -d "$POSTGRES_DB")
+psqlQuiet=(psql "${pgArgs[@]}" -qtAX -v ON_ERROR_STOP=1)
+
+# Which columns of `stories` to save. Built from the catalog rather than
+# written out here, so a column added later is backed up without anyone
+# remembering to edit this script. Generated columns are excluded because
+# Postgres refuses to COPY into them and recomputes them on insert anyway:
+# search_vector, favorites_per_1k_words and summary_embedding_bits all come
+# back by themselves.
+storyColumns() {
+    "${psqlQuiet[@]}" -c "
+        SELECT string_agg(quote_ident(column_name), ',' ORDER BY ordinal_position)
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'stories'
+          AND is_generated = 'NEVER'
+          AND column_name <> 'summary_embedding'"
+}
+
+# Upload one stream to R2, split into parts small enough for wrangler, keeping
+# at most one part on disk at a time. wrangler takes a file rather than stdin
+# and refuses objects over 300 MiB, so --filter writes each part, uploads it,
+# and deletes it before split produces the next.
+#
+# A plain `wrangler r2 object put` of 18.5 GB would need 18.5 GB of scratch
+# space this box does not have, which is the whole reason for the filter.
+#
+# Chunked with dd rather than `split --filter` because the filter form needs a
+# shell command built by string concatenation, and quoting a bucket key through
+# two levels of shell is how that breaks silently.
+uploadStream() {
+    local keyPrefix="$1" baseName="$2" index=0 scratch part bytes
+    scratch="$(mktemp -d)"
+    while :; do
+        part="$scratch/$baseName.part-$(printf '%03d' "$index").age"
+        # iflag=fullblock, or dd returns a short read on a pipe and writes
+        # parts of arbitrary size.
+        dd bs=1M count=250 iflag=fullblock status=none of="$part"
+        bytes="$(stat -c %s "$part")"
+        if (( bytes == 0 )); then
+            rm -f "$part"
+            break
+        fi
+        # wrangler caches in its working directory, and a systemd service
+        # starts in /, which is not writable.
+        if ! ( cd "$scratch" && wrangler r2 object put \
+                "$bucket/$keyPrefix/$(basename "$part")" \
+                --file "$part" --remote >/dev/null 2>"$scratch/error" ); then
+            # wrangler decorates its output, and a log line that is only colour
+            # codes reads as an empty reason. Strip the escapes, drop its 🪵
+            # banner lines, and keep the last line with words in it.
+            printf 'r2 put %s/%s failed: %s\n' "$keyPrefix" "$(basename "$part")" \
+                "$(sed -e 's/\x1b\[[0-9;]*m//g' "$scratch/error" 2>/dev/null \
+                   | grep -v '^🪵' | grep -E '[A-Za-z]' | tail -1)" >&2
+            rm -rf -- "$scratch"
+            return 1
+        fi
+        rm -f "$part"
+        (( bytes < 250 * 1024 * 1024 )) && break
+        index=$((index + 1))
+    done
+    rm -rf -- "$scratch"
+}
+
+if [[ ! -s "$pubkey" ]]; then
+    printf 'No age public key at %s -- refusing to write an unencrypted off-site copy.\n' "$pubkey" >&2
+    exit 1
+fi
+command -v age >/dev/null || { printf 'age is not installed.\n' >&2; exit 1; }
+
+case "$mode" in
+metadata)
+    partial="$backupRoot/.partial-$stamp"
+    final="$backupRoot/$stamp"
+    install -d -m 700 "$backupRoot" "$partial"
+    trap 'rm -rf -- "$partial"' ERR
+
+    columns="$(storyColumns)"
+    [[ -n "$columns" ]] || { printf 'Could not read the stories column list.\n' >&2; exit 1; }
+
+    # Schema for everything, data for everything except the stories rows. The
+    # stories rows follow as a COPY stream so one column can be left out of
+    # them -- pg_dump has no way to exclude a column.
+    pg_dump "${pgArgs[@]}" --format=custom --compress=zstd:3 \
+        --no-owner --no-privileges \
+        --exclude-table-data=public.stories \
+        --file "$partial/schema-and-tables.dump"
+
+    "${psqlQuiet[@]}" -c "\\copy (SELECT $columns FROM stories) TO PROGRAM 'zstd -q -3 -T0 -o $partial/stories.copy.zst'"
+
+    storyCount="$("${psqlQuiet[@]}" -c 'SELECT count(*) FROM stories')"
+    {
+        printf 'lodestone backup %s (metadata)\n\n' "$stamp"
+        printf 'database:      %s on %s:%s\n' "$POSTGRES_DB" "${POSTGRES_HOST:-127.0.0.1}" "${POSTGRES_PORT:-5432}"
+        printf 'postgres:      %s\n' "$("${psqlQuiet[@]}" -c "SELECT current_setting('server_version')")"
+        printf 'stories rows:  %s\n' "$storyCount"
+        printf 'stories cols:  %s\n' "$columns"
+        printf 'excluded:      summary_embedding (see the embeddings mode), and generated columns\n'
+        printf '\nrestore:       deploy/lodestone-restore %s <target-database>\n' "$stamp"
+    } > "$partial/MANIFEST"
+
+    ( cd "$partial" && sha256sum ./* > SHA256SUMS )
+    mv "$partial" "$final"
+    trap - ERR
+
+    # Off the box. A failure here leaves the local copy in place and lets
+    # .offsite-ok go stale, which is what makes the gap visible.
+    offsite=ok
+    for file in "$final"/*; do
+        [[ -f "$file" ]] || continue
+        name="$(basename "$file")"
+        if ! age -R "$pubkey" "$file" | uploadStream "meta/$stamp" "$name"; then
+            offsite=failed
+            printf 'Off-site upload of %s failed.\n' "$name" >&2
+        fi
+    done
+    if [[ "$offsite" == ok ]]; then
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$backupRoot/.offsite-ok"
+        printf 'Off-site copy uploaded to r2://%s/meta/%s\n' "$bucket" "$stamp"
+    fi
+
+    # Local retention. Counted rather than aged, and checked: a prune that
+    # matches nothing when there is something to match is a silent failure, and
+    # one of those ran nightly for two months in another repo before anyone
+    # noticed, because `find` matching no paths still exits 0.
+    mapfile -t existing < <(find "$backupRoot" -mindepth 1 -maxdepth 1 -type d \
+        -name '20??????T??????Z' -printf '%f\n' | sort)
+    if (( ${#existing[@]} == 0 )); then
+        printf 'Retention found no backup directories at all, not even the one just written.\n' >&2
+        exit 1
+    fi
+    if (( ${#existing[@]} > keepLocal )); then
+        pruned=0
+        for old in "${existing[@]:0:${#existing[@]}-keepLocal}"; do
+            rm -rf -- "$backupRoot/$old"
+            pruned=$((pruned + 1))
+        done
+        printf 'Pruned %d old backup(s), kept %d.\n' "$pruned" "$keepLocal"
+    fi
+    printf 'Lodestone metadata backup complete: %s (%s stories, %s)\n' \
+        "$final" "$storyCount" "$(du -sh "$final" | cut -f1)"
+
+    # Reported last, and as a failure, so that `systemctl --failed` shows a
+    # backup that exists only on the disk it is meant to survive. Nexus leaves
+    # this to a stale .offsite-ok marker its health check watches; nothing
+    # watches lodestone's, so the exit code has to say it.
+    if [[ "$offsite" != ok ]]; then
+        printf 'LOCAL COPY ONLY -- the off-site leg failed, so this backup does not survive the disk.\n' >&2
+        exit 1
+    fi
+    ;;
+
+embeddings)
+    # Never written to this disk: COPY streams out, zstd compresses, age seals,
+    # split uploads each 250 MiB part and deletes it.
+    vectorCount="$("${psqlQuiet[@]}" -c 'SELECT count(*) FROM stories WHERE summary_embedding IS NOT NULL')"
+    install -d -m 700 "$backupRoot"
+
+    if ! "${psqlQuiet[@]}" -c "\\copy (SELECT story_id, summary_embedding FROM stories WHERE summary_embedding IS NOT NULL ORDER BY story_id) TO STDOUT" \
+        | zstd -q -3 -T0 \
+        | age -R "$pubkey" \
+        | uploadStream "embeddings/$stamp" "vectors"
+    then
+        printf 'Off-site embedding copy failed.\n' >&2
+        exit 1
+    fi
+
+    {
+        printf 'lodestone embeddings %s\n' "$stamp"
+        printf 'rows:     %s\n' "$vectorCount"
+        printf 'format:   COPY (story_id, summary_embedding) | zstd | age, in 250 MiB parts\n'
+        printf 'location: r2://%s/embeddings/%s/vectors.part-*.age\n' "$bucket" "$stamp"
+        printf 'restore:  cat part-* | age -d -i <key> | zstd -d | psql -c "\\copy stories_embedding_restore FROM STDIN"\n'
+    } > "$backupRoot/.embeddings-$stamp"
+    ln -sf ".embeddings-$stamp" "$backupRoot/.embeddings-latest"
+    find "$backupRoot" -maxdepth 1 -name '.embeddings-20*' -mtime +30 -delete
+    printf 'Lodestone embeddings uploaded: r2://%s/embeddings/%s (%s vectors)\n' \
+        "$bucket" "$stamp" "$vectorCount"
+    ;;
+
+*)
+    printf 'usage: %s {metadata|embeddings}\n' "$(basename "$0")" >&2
+    exit 2
+    ;;
+esac
