@@ -117,6 +117,20 @@ class SearchFilters:
     page: int = 1
     pageSize: int = 25
 
+    @property
+    def ranksBySimilarity(self) -> bool:
+        """Whether this search actually orders by vector distance.
+
+        Having a query vector is not enough: the nearest-neighbour path only
+        runs under sort=semantic or sort=relevance. One predicate, named once,
+        because the query builder and the response's `semantic` flag disagreeing
+        about it is exactly the bug that hid a broken semantic search.
+        """
+        return self.semanticVector is not None and self.sort in (
+            SortOrder.SEMANTIC,
+            SortOrder.RELEVANCE,
+        )
+
 
 def buildWhereClause(filters: SearchFilters) -> tuple[str, dict[str, Any]]:
     """Return an SQL WHERE body plus its bound parameters."""
@@ -236,7 +250,7 @@ def buildCountQuery(filters: SearchFilters) -> tuple[str, dict[str, Any]]:
 def buildSearchQuery(filters: SearchFilters) -> tuple[str, dict[str, Any]]:
     whereBody, parameters = buildWhereClause(filters)
 
-    if filters.semanticVector and filters.sort in (SortOrder.SEMANTIC, SortOrder.RELEVANCE):
+    if filters.ranksBySimilarity:
         # Exact cosine distance on the halfvec column. Small is close, so
         # ascending. The Hamming prefilter in buildSearchQuery narrows the
         # candidate set first; this only ever reranks that shortlist.
@@ -259,7 +273,7 @@ def buildSearchQuery(filters: SearchFilters) -> tuple[str, dict[str, Any]]:
     # rows to a shortlist using an index that costs 96 bytes per story, and the
     # exact halfvec distance then reranks only that shortlist. Recall is close
     # to a full-precision index at a fraction of the memory.
-    if filters.semanticVector and filters.sort in (SortOrder.SEMANTIC, SortOrder.RELEVANCE):
+    if filters.ranksBySimilarity:
         parameters["candidateLimit"] = max(pageSize * 10, SEMANTIC_CANDIDATE_LIMIT)
         sql = f"""
             WITH candidates AS (

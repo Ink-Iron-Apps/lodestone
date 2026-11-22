@@ -283,3 +283,30 @@ def testSortsRequestNullsLastConsistently():
         sql, _ = buildSearchQuery(SearchFilters(sort=sort))
         orderBy = sql[sql.rindex("ORDER BY"):]
         assert "NULLS LAST" in orderBy, f"{sort} lost its NULLS LAST"
+
+
+def testSemanticVectorWithoutASemanticSortRanksNothing():
+    """Having embedded the query is not the same as having used it.
+
+    `?semantic=...` once left `sort` at its default of recency, which takes the
+    non-semantic branch: the vector was computed, the only trace of it in the
+    SQL was the IS NOT NULL filter, and the response still advertised
+    `"semantic": true`. The endpoint now resolves an unspecified sort to
+    semantic, and this is the predicate it resolves against.
+    """
+    filters = SearchFilters(semanticVector=SAMPLE_VECTOR, sort=SortOrder.UPDATED)
+    assert not filters.ranksBySimilarity
+    sql, _ = buildSearchQuery(filters)
+    assert "WITH candidates AS" not in sql
+    assert "binary_quantize" not in sql
+
+
+@pytest.mark.parametrize("sort", [SortOrder.SEMANTIC, SortOrder.RELEVANCE])
+def testSemanticSortsRankBySimilarity(sort):
+    assert SearchFilters(semanticVector=SAMPLE_VECTOR, sort=sort).ranksBySimilarity
+
+
+def testSimilarityRankingNeedsAVector():
+    """sort=semantic with nothing to compare against falls back to recency, so
+    it must not claim to be ranking by similarity."""
+    assert not SearchFilters(sort=SortOrder.SEMANTIC).ranksBySimilarity

@@ -64,11 +64,30 @@ app = FastAPI(
 )
 
 
-def runQuery(sql: str, parameters: dict[str, Any] | None = None) -> list[dict]:
+def runQuery(
+    sql: str,
+    parameters: dict[str, Any] | None = None,
+    efSearch: Optional[int] = None,
+) -> list[dict]:
     if connectionPool is None:
         raise HTTPException(status_code=503, detail="database pool not ready")
     try:
         with connectionPool.connection() as connection, connection.cursor() as cursor:
+            if efSearch is not None:
+                # How many candidates the HNSW graph is allowed to consider.
+                # The default is 40, which silently caps the prefilter: asking
+                # the index for 500 nearest neighbours returned 40 and the
+                # exact reranker then reranked those 40, so the candidate limit
+                # was decorative. set_config with is_local true, because SET
+                # LOCAL takes no bind parameter -- it reaches the server as
+                # `SET LOCAL hnsw.ef_search = $1` and fails to parse -- and
+                # because local scope keeps the setting inside this transaction
+                # rather than leaving it on a pooled connection for the next
+                # borrower.
+                cursor.execute(
+                    "SELECT set_config('hnsw.ef_search', %s, true)",
+                    (str(min(efSearch, 1000)),),
+                )
             cursor.execute(sql, parameters or {})
             return cursor.fetchall()
     except psycopg.Error as error:
@@ -94,7 +113,15 @@ def parseFilters(
     maxWords: Annotated[Optional[int], Query(ge=0)] = None,
     minFavorites: Annotated[Optional[int], Query(ge=0)] = None,
     minChapters: Annotated[Optional[int], Query(ge=1)] = None,
-    sort: Annotated[SortOrder, Query()] = SortOrder.UPDATED,
+    # No default, so that a caller who said nothing about ordering can be told
+    # apart from one who asked for recency. `?semantic=...` alone used to mean
+    # the second: the vector was computed and then never ranked against,
+    # because the semantic branch of the query builder only fires for
+    # sort=semantic or sort=relevance. The response still reported
+    # "semantic": true, so the results looked like nearest neighbours and were
+    # the most recently updated stories that happen to have a vector -- which
+    # is every story. Resolved below instead.
+    sort: Annotated[Optional[SortOrder], Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     pageSize: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> SearchFilters:
@@ -106,6 +133,11 @@ def parseFilters(
             # Semantic search is an enhancement, not the core product. Degrade
             # to the other filters rather than failing the whole request.
             logger.warning("semantic search unavailable, falling back: %s", error)
+
+    if sort is None:
+        # A semantic query with no sort asked for means rank by meaning. Any
+        # other unsorted search keeps the recency default it has always had.
+        sort = SortOrder.SEMANTIC if semanticVector else SortOrder.UPDATED
 
     return SearchFilters(
         query=q, semanticVector=semanticVector,
@@ -123,7 +155,7 @@ def parseFilters(
 @app.get("/api/search")
 def search(filters: Annotated[SearchFilters, Depends(parseFilters)]) -> dict:
     sql, parameters = buildSearchQuery(filters)
-    rows = runQuery(sql, parameters)
+    rows = runQuery(sql, parameters, efSearch=parameters.get("candidateLimit"))
 
     # Counted separately and capped. Riding a window count along with the page
     # looked free but forced a full scan of every match; see COUNT_CEILING.
@@ -141,8 +173,11 @@ def search(filters: Annotated[SearchFilters, Depends(parseFilters)]) -> dict:
         "page": filters.page,
         "pageSize": filters.pageSize,
         # Makes a degraded semantic search visible to the caller instead of
-        # silently returning keyword results that look like semantic ones.
-        "semantic": filters.semanticVector is not None,
+        # silently returning keyword results that look like semantic ones. True
+        # only when the vector was actually ranked against: having embedded the
+        # query is not the same as having used it, and claiming the one for the
+        # other is how a sort bug stayed invisible.
+        "semantic": filters.ranksBySimilarity,
         "results": rows,
     }
 
