@@ -116,6 +116,15 @@ def backfillEmbeddings(
     rows return to the pool.
     """
     embeddedCount = 0
+    # Where the last batch stopped. Without it the claim restarts from the
+    # beginning of the story_id order on every batch, and because an embedded
+    # row keeps its place in that order until the next vacuum, each batch
+    # re-walked the whole prefix it had already done -- quadratic over the
+    # corpus, ~248,000 batches of it at 7.9M stories. Rows another worker holds
+    # are left behind rather than retried here, which is the point of claiming
+    # them: that worker owns them, and anything it rolls back is picked up by
+    # the next pass, which starts from zero again.
+    lastSeenStoryId = 0
 
     with psycopg.connect(connectionString) as connection:
         while True:
@@ -128,11 +137,12 @@ def backfillEmbeddings(
                     SELECT story_id, title, summary
                     FROM stories
                     WHERE summary_embedding IS NULL AND deleted_at IS NULL
+                      AND story_id > %s
                     ORDER BY story_id
                     LIMIT %s
                     FOR UPDATE SKIP LOCKED
                     """,
-                    (batchSize,),
+                    (lastSeenStoryId, batchSize),
                 )
                 rows = cursor.fetchall()
 
@@ -159,6 +169,7 @@ def backfillEmbeddings(
                 )
             connection.commit()
 
+            lastSeenStoryId = rows[-1][0]
             embeddedCount += len(rows)
             logger.info("embedded %d stories", embeddedCount)
 

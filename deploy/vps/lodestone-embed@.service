@@ -39,8 +39,17 @@ ExecStart=/home/riley/coding/lodestone/scripts/dev.sh crawl embed --batch-size 3
 # 164,725-row backlog stopped the crawl for 28 hours on 2026-10-27.
 #
 # The command exits once nothing is pending, so the restart is the poll loop.
+#
+# A poll is only free if finding nothing is free. Until migration 010 it was
+# not: no index covered `summary_embedding IS NULL`, so each poll walked all
+# 7.9M primary-key entries and heap-fetched every one before returning empty --
+# about 7 minutes, and 3,165 restarts of it, which made this worker the largest
+# read load on the host. With the partial index the same poll is an index scan
+# over an empty index. A minute between them is still more often than a corpus
+# that grows by a crawl needs, so the interval is now a quarter hour: new
+# summaries wait that long for a vector, which no reader notices.
 Restart=always
-RestartSec=60
+RestartSec=900
 
 # The model server here is CPU-only rather than the desktop's GPU. That is fine
 # for the steady state -- only newly crawled summaries need embedding -- but it
