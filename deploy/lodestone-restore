@@ -169,6 +169,8 @@ search does not. Two ways to finish:
      The HNSW index over the quantized column is maintained by that UPDATE, so
      it does not need rebuilding; REINDEX it only if it was skipped above.
 
-The private age key is not on this machine, by design. Without it the off-site
-copies cannot be read -- recovery needs the key from wherever it is kept.
+Off-site copies are sealed to the desktop's fleet SSH key, whose private half
+is not on this machine, by design. Bring it to the restoring host to read them:
+
+    scp desktop:.ssh/id_fleet /tmp/restore-key
 NOTES

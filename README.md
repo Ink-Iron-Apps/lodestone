@@ -198,8 +198,23 @@ is worth the 18.5 GB.
 
 Either way a restore gives a working corpus; without the vectors, keyword
 search works and semantic search is degraded until they are applied or
-recomputed. The private half of the age key is deliberately not on this
-machine, so recovery needs it from wherever it is kept.
+recomputed.
+
+Off-site copies are sealed to the desktop's fleet SSH key
+(`ssh-ed25519 ...9XQU DESKTOP-fleet`), which `age` accepts as a recipient
+directly. The private half is on the desktop and not on this machine, so a
+compromised server cannot read its own backups, and it is a key that cannot be
+mislaid without also losing fleet SSH -- the previous dedicated age key spent
+seven weeks sitting in the VPS home directory waiting to be collected, which is
+the failure this avoids. A restore brings it to the restoring host:
+
+```bash
+scp desktop:.ssh/id_fleet /tmp/restore-key
+cat vectors.part-*.age | age -d -i /tmp/restore-key | zstd -d
+```
+
+Rotating the fleet keys makes every earlier copy unreadable, so a rotation
+means re-uploading a backup under the new recipient.
 
 ## Tests
 

@@ -35,10 +35,21 @@
 # Doing it in that order matters: the table carries 18.6 GB of indexes, and
 # building them once after the rows are in beats maintaining them per row.
 #
-# Off-site copies are encrypted to an age public key. Only the public half is
-# on this machine, so a compromised server cannot read its own backups -- and
-# cannot be used to read Nexus's either, because it is the same key pair and
-# the private half lives off the box.
+# Off-site copies are encrypted to the desktop's fleet SSH key, which age takes
+# as a recipient directly. Only the public half is on this machine, so a
+# compromised server cannot read its own backups. An SSH key already in daily
+# use rather than a dedicated age key, because the dedicated one was generated
+# on 2026-10-01, left in ~/nexus-backup-key-TAKE-AND-DELETE for collection, and
+# never collected: for seven weeks the private half sat on the machine whose
+# compromise it was supposed to survive, and when asked, nobody could say where
+# it was. A key that cannot be mislaid without also losing fleet SSH fails more
+# loudly.
+#
+# Decrypting needs that private half brought to the restoring host:
+#   scp desktop:.ssh/id_fleet /tmp/restore-key
+#   cat vectors.part-*.age | age -d -i /tmp/restore-key | zstd -d
+#
+# Rotating the fleet keys orphans every copy sealed to the old one.
 set -euo pipefail
 
 mode="${1:-metadata}"
