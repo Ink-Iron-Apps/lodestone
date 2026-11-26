@@ -99,8 +99,11 @@ storyColumns() {
 # shell command built by string concatenation, and quoting a bucket key through
 # two levels of shell is how that breaks silently.
 uploadStream() {
-    local keyPrefix="$1" baseName="$2" index=0 scratch part bytes
+    local keyPrefix="$1" baseName="$2" index=0 scratch part bytes attempt reason
     scratch="$(mktemp -d)"
+    # One cheap call before the stream starts, so the token is refreshed while
+    # nothing is in flight rather than somewhere in the middle of 75 parts.
+    ( cd "$scratch" && wrangler r2 bucket list >/dev/null 2>&1 ) || true
     while :; do
         part="$scratch/$baseName.part-$(printf '%03d' "$index").age"
         # iflag=fullblock, or dd returns a short read on a pipe and writes
@@ -111,20 +114,37 @@ uploadStream() {
             rm -f "$part"
             break
         fi
-        # wrangler caches in its working directory, and a systemd service
-        # starts in /, which is not writable.
-        if ! ( cd "$scratch" && wrangler r2 object put \
-                "$bucket/$keyPrefix/$(basename "$part")" \
-                --file "$part" --remote >/dev/null 2>"$scratch/error" ); then
+        # Retried, because a single part failing is not the same as the upload
+        # being impossible. The 2026-11-24 run died on part 018 of 75 with
+        # Cloudflare code 10000, "Authentication error", after seventeen parts
+        # had gone up fine: every part is a separate wrangler process, each
+        # re-reads the credential file and refreshes the OAuth token as needed,
+        # and if Cloudflare rotates the refresh token on use then a long run of
+        # short-lived processes races itself -- the last writer wins and a
+        # sibling is left holding an invalidated token. One retry a few seconds
+        # later gets a freshly written credential. Without this the whole
+        # 18.5 GB stream is thrown away over one unlucky part, and because the
+        # COPY is upstream of the pipe, there is no way to resume it.
+        attempt=1
+        until ( cd "$scratch" && wrangler r2 object put \
+                    "$bucket/$keyPrefix/$(basename "$part")" \
+                    --file "$part" --remote >/dev/null 2>"$scratch/error" ); do
             # wrangler decorates its output, and a log line that is only colour
             # codes reads as an empty reason. Strip the escapes, drop its 🪵
             # banner lines, and keep the last line with words in it.
-            printf 'r2 put %s/%s failed: %s\n' "$keyPrefix" "$(basename "$part")" \
-                "$(sed -e 's/\x1b\[[0-9;]*m//g' "$scratch/error" 2>/dev/null \
-                   | grep -v '^🪵' | grep -E '[A-Za-z]' | tail -1)" >&2
-            rm -rf -- "$scratch"
-            return 1
-        fi
+            reason="$(sed -e 's/\x1b\[[0-9;]*m//g' "$scratch/error" 2>/dev/null \
+                      | grep -v '^🪵' | grep -E '[A-Za-z]' | tail -1)"
+            if (( attempt >= 4 )); then
+                printf 'r2 put %s/%s failed after %d attempts: %s\n' \
+                    "$keyPrefix" "$(basename "$part")" "$attempt" "$reason" >&2
+                rm -rf -- "$scratch"
+                return 1
+            fi
+            printf 'r2 put %s/%s attempt %d failed, retrying: %s\n' \
+                "$keyPrefix" "$(basename "$part")" "$attempt" "$reason" >&2
+            sleep $(( attempt * 15 ))
+            attempt=$((attempt + 1))
+        done
         rm -f "$part"
         (( bytes < 250 * 1024 * 1024 )) && break
         index=$((index + 1))
@@ -186,6 +206,12 @@ metadata)
     done
     if [[ "$offsite" == ok ]]; then
         date -u +%Y-%m-%dT%H:%M:%SZ > "$backupRoot/.offsite-ok"
+        # Also inside the directory it describes. The root marker says only
+        # that some upload once worked; reading the backup directory itself
+        # could not tell a copy that exists in two places from one that never
+        # left the box, and the prune below counts directories without caring
+        # which kind they are.
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$final/.offsite-ok"
         printf 'Off-site copy uploaded to r2://%s/meta/%s\n' "$bucket" "$stamp"
     fi
 
@@ -202,6 +228,12 @@ metadata)
     if (( ${#existing[@]} > keepLocal )); then
         pruned=0
         for old in "${existing[@]:0:${#existing[@]}-keepLocal}"; do
+            # Said out loud rather than silently, because discarding the local
+            # side of a copy that also sits in R2 is routine and discarding the
+            # only copy there ever was is not.
+            if [[ ! -f "$backupRoot/$old/.offsite-ok" ]]; then
+                printf 'Pruning %s, which never reached off-site storage.\n' "$old" >&2
+            fi
             rm -rf -- "$backupRoot/$old"
             pruned=$((pruned + 1))
         done
